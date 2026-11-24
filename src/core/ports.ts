@@ -235,6 +235,8 @@ export interface Store {
   putMarketStates(states: MarketState[]): Promise<void>; // batched
   getBaseline(symbol: Symbol): Promise<Baseline | null>;
   putBaseline(b: Baseline): Promise<void>;
+  /** Optional (additive): all baselines in ONE call; core falls back to getBaseline per symbol. */
+  getBaselines?(): Promise<Baseline[]>;
 
   // alert states
   getRuleStates(date: TradingDate): Promise<RuleState[]>;
