@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Market Monitor UX mock-ups (DG-3)</title>
+<style>
+{{CSS}}
+</style>
+</head>
+<body>
+<a class="skip" href="#stage">Skip to the mock-up</a>
+<header class="top">
+  <h1>Market Monitor: choose a design (decision gate DG-3)</h1>
+  <p class="warn"><strong>Mock-ups with SAMPLE data.</strong> Dates, tickers, prices and thresholds are invented (Mon 30 Nov 2026). Nothing here talks to a network, a bot or a market. Muscat time is ET + 9 h in winter.</p>
+  <div class="bar" id="altbar" role="tablist" aria-label="Alternative">
+    <button type="button" role="tab" data-alt="A" aria-selected="true">A · Glance Line<small>2 to 3 lines, details on tap</small></button>
+    <button type="button" role="tab" data-alt="B" aria-selected="false">B · Decision Card<small>everything in one grouped card</small></button>
+    <button type="button" role="tab" data-alt="C" aria-selected="false">C · Live Board<small>pinned board plus short pings</small></button>
+  </div>
+</header>
+<main id="stage">
+  <div id="subtabs" role="tablist" aria-label="What to look at">
+    <button type="button" role="tab" data-tab="tg" aria-selected="true">Telegram messages (a to e, i)</button>
+    <button type="button" role="tab" data-tab="dash" aria-selected="false">Dashboard (f, g, h)</button>
+    <button type="button" role="tab" data-tab="trade" aria-selected="false">Trade-offs (j)</button>
+  </div>
+  <section id="intro" aria-live="polite"></section>
+  <div id="frameBar">
+    <div class="bar" id="screenbar" role="group" aria-label="Screen size" style="margin:0">
+      <button type="button" data-screen="cover" aria-pressed="true">Cover screen (about 360 px)</button>
+      <button type="button" data-screen="inner" aria-pressed="false">Inner screen (about 780 px)</button>
+    </div>
+    <button type="button" class="btn" id="themebtn">Theme: auto</button>
+    <span id="fitnote" role="status"></span>
+  </div>
+  <div id="frameWrap"></div>
+</main>
+<div id="toast" role="status" aria-live="polite"></div>
+
+<dialog id="editDlg" aria-labelledby="edTitle">
+  <form id="edForm" novalidate>
+    <h2 id="edTitle"></h2>
+    <p id="edCtx" class="sm"></p>
+    <fieldset>
+      <legend>Enter it as</legend>
+      <label><input type="radio" name="edmode" value="usd" checked> Dollar price ($)</label>
+      <label><input type="radio" name="edmode" value="pct"> Percent from Previous Close (%)</label>
+    </fieldset>
+    <label for="edVal" id="edLbl"></label>
+    <input id="edVal" inputmode="decimal" autocomplete="off">
+    <p id="edPrev" aria-live="polite"></p>
+    <p id="edErr" role="alert"></p>
+    <div id="edConfirm" hidden role="alertdialog" aria-label="Already crossed">
+      <p><strong>This will alert immediately. Save?</strong></p>
+      <p class="sm">The latest price has already crossed this value. Saving re-arms the rule and the alert is sent at once.</p>
+      <div class="dact"><button type="button" class="btn pri" id="edYes">Yes, save and alert</button><button type="button" class="btn" id="edBack">No, go back</button></div>
+    </div>
+    <div class="dact"><button type="button" class="btn" id="edCancel">Cancel</button><button type="button" class="btn pri" id="edSave">Save</button></div>
+  </form>
+</dialog>
+
+<script>
+{{MESSAGES}}
+</script>
+<script>
+{{APP}}
+</script>
+</body>
+</html>

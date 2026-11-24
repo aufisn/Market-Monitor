@@ -1,0 +1,24 @@
+name = "market-monitor"
+main = "src/worker/index.ts"
+compatibility_date = "2026-11-01"
+
+# One schedule (UTC). The code decides from New York time and the calendar what to do (FR-1.5).
+[triggers]
+crons = ["* 11-21 * * 1-5"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "market-monitor"
+database_id = "REPLACE_AT_SETUP" # not a secret; replaced after `wrangler d1 create`
+migrations_dir = "migrations"
+
+# Static dashboard: the page shell is served WITHOUT Worker code (FR-8.1).
+# Keep this list to exactly these routes: matched routes fail with 429 once the daily request allowance is used up.
+[assets]
+directory = "./public"
+binding = "ASSETS"
+run_worker_first = ["/api/*", "/tg/*", "/health"]
+
+# Secrets (set with `wrangler secret put`, never here):
+#   ALPACA_KEY_ID, ALPACA_SECRET_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
+#   TELEGRAM_WEBHOOK_SECRET, DASHBOARD_ACCESS_CODE, (optional) FINNHUB_API_KEY

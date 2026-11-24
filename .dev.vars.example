@@ -1,0 +1,8 @@
+# Names only. Copy to .dev.vars (git-ignored) and fill in locally. Never commit values.
+ALPACA_KEY_ID=
+ALPACA_SECRET_KEY=
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_CHAT_ID=
+TELEGRAM_WEBHOOK_SECRET=
+DASHBOARD_ACCESS_CODE=
+FINNHUB_API_KEY=
