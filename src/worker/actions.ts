@@ -11,8 +11,7 @@ import { nyDate } from "../adapters/util";
 import { acknowledge, acknowledgeAll, isActive, rearmAfterEdit } from "../core/alerts";
 import type { RuleKind, RuleState, StockConfig } from "../core/ports";
 import { drainOutbound } from "./outbox";
-import { APP_VERSION, type Ctx } from "./env";
-import type { Intent } from "./intents";
+import type { Ctx } from "./env";
 import { ApiError, MAX_STOCKS, changedRules, checkBand, validateStockInput, validateSymbol, wouldAlertNow } from "./validate";
 
 export interface SaveOptions {
@@ -116,77 +115,35 @@ export async function setPaused(ctx: Ctx, symbolInput: string, paused: boolean):
   await ctx.store.putStock({ ...s, paused });
 }
 
-export async function statusText(ctx: Ctx): Promise<string> {
-  const now = ctx.now();
-  const date = nyDate(now);
-  const snap = await ctx.store.dashboardSnapshot(date);
-  const unack = snap.rules.filter((r) => r.state === "TRIGGERED" || r.state === "REPEATING").length;
-  const age = snap.lastPollMs === null ? "never" : `${Math.max(0, Math.round((now - snap.lastPollMs) / 1000))} s ago`;
-  return [`Market Monitor v${APP_VERSION}`, `Last poll: ${age}`, `Stocks: ${snap.stocks.length}`, `Unacknowledged: ${unack}`].join("\n");
+export const PAUSED_ALL_KEY = "paused_all";
+
+async function readPausedList(ctx: Ctx): Promise<string[] | null> {
+  try {
+    const raw = await ctx.store.getMeta(PAUSED_ALL_KEY);
+    const parsed: unknown = raw ? JSON.parse(raw) : null;
+    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === "string") : null;
+  } catch {
+    return null;
+  }
 }
 
-export const HELP_TEXT = [
-  "/status",
-  "/ack SYMBOL, /ackall",
-  "/set SYMBOL high|low 250|5%|off",
-  "/set SYMBOL volume 2x|500000|off",
-  "(add the word confirm to accept an immediate alert)",
-  "/mute SYMBOL [30m|2h|1d], /unmute [SYMBOL]",
-  "/pause SYMBOL, /resume SYMBOL",
-  "/test, /help",
-].join("\n");
-
-/** Runs a parsed Telegram command and returns the plain reply text. Errors become readable replies. */
-export async function runIntent(ctx: Ctx, intent: Intent): Promise<string> {
-  try {
-    switch (intent.type) {
-      case "help":
-        return HELP_TEXT;
-      case "invalid":
-        return intent.message;
-      case "status":
-        return await statusText(ctx);
-      case "test":
-        await ctx.notifier.send({ type: "TEST_ALERT" });
-        return "Test alert sent.";
-      case "ackall": {
-        const n = await applyAck(ctx, { all: true }, "ackall");
-        return n ? `Acknowledged ${n} alert(s).` : "Nothing to acknowledge.";
-      }
-      case "ack": {
-        const n = await applyAck(ctx, { symbol: intent.symbol }, "command");
-        return n ? `Acknowledged ${intent.symbol} (${n} rule(s)).` : `No active alert for ${intent.symbol}.`;
-      }
-      case "mute":
-        await setMute(ctx, intent.symbol, intent.minutes);
-        return `${intent.symbol} muted for ${intent.minutes} min.`;
-      case "unmute":
-        if (intent.symbol) await setMute(ctx, intent.symbol, null);
-        else for (const s of await ctx.store.listStocks()) if (s.mutedUntilMs) await setMute(ctx, s.symbol, null);
-        return "Unmuted.";
-      case "pause":
-      case "resume": {
-        const paused = intent.type === "pause";
-        if (!intent.symbol) return `Usage: /${intent.type} SYMBOL`;
-        await setPaused(ctx, intent.symbol, paused);
-        return `${intent.symbol} ${paused ? "paused" : "resumed"}.`;
-      }
-      case "set": {
-        const { stock } = await saveStock(ctx, { symbol: intent.symbol, [intent.field]: intent.value, confirm: intent.confirm }, { mode: "upsert" });
-        const prevClose = (await ctx.store.getMarketStates(nyDate(ctx.now()))).find((m) => m.symbol === stock.symbol)?.prev?.close;
-        const f = (t: { mode: string; value: number } | undefined): string => {
-          if (!t) return "off";
-          if (t.mode === "dollar") return `$${t.value}`;
-          if (t.mode === "percent") return `${t.value}%${prevClose ? ` = $${(prevClose * (1 + t.value / 100)).toFixed(2)}` : ""}`;
-          return t.mode === "multiple" ? `${t.value}x` : `${t.value} shares`;
-        };
-        return `${stock.symbol}: high ${f(stock.high)}, low ${f(stock.low)}, volume ${f(stock.volume)}`;
-      }
-    }
-  } catch (e) {
-    if (e instanceof ApiError) {
-      return e.code === "CONFIRM_REQUIRED" ? "This will alert immediately. Repeat the command with the word confirm to save." : e.message;
-    }
-    return "Something went wrong on the server.";
+/**
+ * Global pause / resume (all stocks). The list of stocks paused by the global pause only ever grows
+ * until a resume, so pause, pause, resume still restores everything the global pause stopped.
+ * Returns how many stocks changed.
+ */
+export async function setPausedAll(ctx: Ctx, paused: boolean): Promise<number> {
+  const stocks = await ctx.store.listStocks();
+  const list = await readPausedList(ctx);
+  if (paused) {
+    const todo = stocks.filter((s) => !s.paused);
+    for (const s of todo) await ctx.store.putStock({ ...s, paused: true });
+    const union = [...new Set([...(list ?? []), ...todo.map((s) => s.symbol)])];
+    await ctx.store.setMeta(PAUSED_ALL_KEY, JSON.stringify(union));
+    return todo.length;
   }
+  const todo = stocks.filter((s) => s.paused && (list === null || list.includes(s.symbol)));
+  for (const s of todo) await ctx.store.putStock({ ...s, paused: false });
+  await ctx.store.setMeta(PAUSED_ALL_KEY, "");
+  return todo.length;
 }

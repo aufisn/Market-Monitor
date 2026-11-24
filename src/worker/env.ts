@@ -1,8 +1,9 @@
 /** Worker environment, secret names, and wiring of adapters. */
 import { AlpacaMarketData } from "../adapters/alpaca";
 import { D1Store } from "../adapters/d1store";
-import { renderPlaceholder } from "../adapters/render-placeholder";
-import { TelegramApi, TelegramNotifier } from "../adapters/telegram";
+import { GlanceNotifier } from "../adapters/glance-notifier";
+import { cleanDashboardUrl } from "../adapters/glance-fmt";
+import { TelegramApi } from "../adapters/telegram";
 import { CallCounter, type Sleep } from "../adapters/util";
 
 export const APP_VERSION = "0.1.0";
@@ -27,6 +28,8 @@ export interface Env {
   TELEGRAM_WEBHOOK_SECRET?: string;
   DASHBOARD_ACCESS_CODE?: string;
   FINNHUB_API_KEY?: string;
+  /** Non-secret public https address of the dashboard (wrangler.toml [vars]); empty hides the button. */
+  DASHBOARD_URL?: string;
 }
 
 export interface Deps {
@@ -40,7 +43,9 @@ export interface Ctx {
   store: D1Store;
   market: AlpacaMarketData;
   telegram: TelegramApi;
-  notifier: TelegramNotifier;
+  notifier: GlanceNotifier;
+  /** Validated DASHBOARD_URL or undefined. */
+  dashboardUrl?: string;
   /** outbound fetches (limit 45 of 50) */
   counter: CallCounter;
   /** D1 queries; a db.batch() counts once (limit 45 of 50) */
@@ -76,7 +81,12 @@ export function buildCtx(env: Env, deps: Deps = {}, cacheTtlMs = 25_000): Ctx {
     now,
     counter,
   });
-  // PLACEHOLDER renderer until DG-3: swap here for the chosen production layout.
-  const notifier = new TelegramNotifier(telegram, renderPlaceholder);
-  return { env, store, market, telegram, notifier, counter, d1counter, now, sleep: deps.sleep };
+  const dashboardUrl = cleanDashboardUrl(env.DASHBOARD_URL);
+  // DG-3: Alternative A "Glance Line".
+  const notifier = new GlanceNotifier(telegram, {
+    now,
+    dashboardUrl,
+    loadContext: async () => ({ stocks: await store.listStocks(), baselines: await store.getBaselines() }),
+  });
+  return { env, store, market, telegram, notifier, dashboardUrl, counter, d1counter, now, sleep: deps.sleep };
 }

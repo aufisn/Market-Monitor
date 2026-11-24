@@ -1,6 +1,11 @@
 name: Deploy
 on:
   workflow_dispatch:
+    inputs:
+      emergency_override:
+        description: "Emergency: skip the 08:30-16:30 New York deploy freeze (FR-14.2)"
+        type: boolean
+        default: false
   push:
     branches: [main]
 permissions:
@@ -22,6 +27,8 @@ jobs:
       - run: npm test
       - name: Deploy freeze (FR-14.2)
         run: node scripts/deploy-freeze.mjs
+        env:
+          MM_EMERGENCY_DEPLOY: ${{ inputs.emergency_override && '1' || '0' }}
       - name: Deploy
         run: npx wrangler deploy
         env:

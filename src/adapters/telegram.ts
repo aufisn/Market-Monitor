@@ -20,6 +20,10 @@ export interface Rendered {
   text: string; // HTML parse mode; dynamic parts must go through escapeHtml
   buttons?: Button[][];
   silent?: boolean; // disable_notification
+  /** Send as a reply to this message id (Details card). */
+  replyTo?: number;
+  /** Ask the chat to reply to this message (ForceReply); the value is the input placeholder. Replaces any buttons. */
+  forceReply?: string;
 }
 
 export type TelegramErrorKind = "AUTH" | "RATE_LIMIT" | "BAD_REQUEST" | "SERVER" | "TIMEOUT" | "NETWORK";
@@ -171,11 +175,17 @@ export function buildSetWebhookBody(url: string, secretToken: string): Record<st
 
 function body(r: Rendered): Record<string, unknown> {
   const text = r.text.length > MAX_TEXT ? r.text.slice(0, MAX_TEXT - 1) + "…" : r.text;
-  const rm = markup(r.buttons);
-  return { text, parse_mode: "HTML", link_preview_options: { is_disabled: true }, ...(rm ? { reply_markup: rm } : {}) };
+  const rm = r.forceReply !== undefined
+    ? { force_reply: true, input_field_placeholder: r.forceReply.slice(0, 64), selective: false }
+    : markup(r.buttons);
+  return {
+    text, parse_mode: "HTML", link_preview_options: { is_disabled: true },
+    ...(r.replyTo !== undefined ? { reply_parameters: { message_id: r.replyTo, allow_sending_without_reply: true } } : {}),
+    ...(rm ? { reply_markup: rm } : {}),
+  };
 }
 
-function markup(buttons?: Button[][]): { inline_keyboard: unknown[][] } | undefined {
+export function markup(buttons?: Button[][]): { inline_keyboard: unknown[][] } | undefined {
   if (!buttons || buttons.length === 0) return undefined;
   const rows = buttons
     .map((row) => row.filter((b) => b.data || b.url).map((b) => (b.url ? { text: b.text, url: b.url } : { text: b.text, callback_data: b.data })))

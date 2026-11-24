@@ -51,7 +51,7 @@ describe("telegram webhook (AT-20)", () => {
   it("answers the owner's /status and ignores replayed updates", async () => {
     expect((await hook(msg(42, "/status", 10))).status).toBe(200);
     expect(tgSent).toHaveLength(1);
-    expect(JSON.stringify(tgSent[0])).toContain("draft layout");
+    expect(JSON.stringify(tgSent[0])).toContain("STATUS");
     await hook(msg(42, "/status", 10));
     expect(tgSent).toHaveLength(1);
   });

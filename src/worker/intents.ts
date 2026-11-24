@@ -1,6 +1,7 @@
 /** Telegram text commands -> typed intents (FR-5.6). Pure, no I/O. */
 import type { ThresholdInput, VolumeInput } from "../core/ports";
 import { SYMBOL_RE } from "../adapters/callbacks";
+import { isValidTradingDate } from "./dates";
 
 export type Intent =
   | { type: "ack"; symbol: string }
@@ -12,6 +13,10 @@ export type Intent =
   | { type: "unmute"; symbol?: string }
   | { type: "pause"; symbol?: string }
   | { type: "resume"; symbol?: string }
+  | { type: "ticker"; symbol: string }
+  | { type: "watchlist" }
+  | { type: "today" }
+  | { type: "why"; symbol: string; hour: number; minute: number; date?: string }
   | { type: "test" }
   | { type: "help" }
   | { type: "invalid"; message: string };
@@ -49,6 +54,23 @@ export function parseCommand(input: string): Intent | null {
       return { type: "test" };
     case "ackall":
       return { type: "ackall" };
+    case "watchlist":
+      return { type: "watchlist" };
+    case "today":
+      return { type: "today" };
+    case "ticker": {
+      const s = sym(a[0]);
+      return s ? { type: "ticker", symbol: s } : { type: "invalid", message: "Usage: /ticker SYMBOL" };
+    }
+    case "why": {
+      const s = sym(a[0]);
+      const t = /^(\d{1,2}):(\d{2})$/.exec(a[1] ?? "");
+      const hour = t ? Number(t[1]) : NaN;
+      const minute = t ? Number(t[2]) : NaN;
+      if (!s || !t || hour > 23 || minute > 59 || a.length > 3) return { type: "invalid", message: "Usage: /why SYMBOL HH:MM [YYYY-MM-DD] (New York time)" };
+      if (a[2] !== undefined && !isValidTradingDate(a[2])) return { type: "invalid", message: "Date must be a real day from 2026-01-01 to the end of the calendar, as YYYY-MM-DD." };
+      return { type: "why", symbol: s, hour, minute, ...(a[2] ? { date: a[2] } : {}) };
+    }
     case "ack": {
       const s = sym(a[0]);
       return s ? { type: "ack", symbol: s } : { type: "invalid", message: "Usage: /ack SYMBOL" };
@@ -97,4 +119,20 @@ function parseSet(a: string[]): Intent {
   const dol = /^\$?(\d+(?:\.\d+)?)$/.exec(raw);
   if (dol) return { type: "set", symbol: s, field, value: { mode: "dollar", value: Number(dol[1]) }, confirm };
   return { type: "invalid", message: USAGE };
+}
+
+/** Typed value for "Ack + move": a price (148.00) or a percent further out (+3%). */
+export function parseMoveInput(text: string): { price: number } | { pct: number } | null {
+  const t = text.trim().replace(",", ".").slice(0, 20);
+  const pct = /^\+?(\d+(?:\.\d+)?)%$/.exec(t);
+  if (pct) {
+    const v = Number(pct[1]);
+    return v > 0 && v <= 100 ? { pct: v } : null;
+  }
+  const price = /^\$?(\d+(?:\.\d+)?)$/.exec(t);
+  if (price) {
+    const v = Number(price[1]);
+    return v > 0 && v <= 1_000_000 ? { price: v } : null;
+  }
+  return null;
 }

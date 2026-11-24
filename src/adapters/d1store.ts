@@ -412,6 +412,28 @@ export class D1Store implements Store {
   async getAuthRow(client: string): Promise<AuthRow | null> {
     return this.first<AuthRow>(this.p("SELECT fails, window_start_ms, locked_until_ms FROM auth_failures WHERE client = ?", client));
   }
+  /** Several rows in ONE read (client row and global row together). */
+  async getAuthRows(clients: string[]): Promise<Map<string, AuthRow & { client: string }>> {
+    const marks = clients.map(() => "?").join(",");
+    const rows = await this.all<AuthRow & { client: string }>(
+      this.p(`SELECT client, fails, window_start_ms, locked_until_ms FROM auth_failures WHERE client IN (${marks})`, ...clients),
+    );
+    return new Map(rows.map((r) => [r.client, r]));
+  }
+  /** Global failed-auth counter for the current window (one upsert, returns the new count). */
+  async bumpGlobalAuthFailure(key: string, nowMs: number, windowMs: number): Promise<number> {
+    const row = await this.first<{ fails: number }>(
+      this.p(
+        `INSERT INTO auth_failures (client, fails, window_start_ms, locked_until_ms) VALUES (?, 1, ?, 0)
+         ON CONFLICT(client) DO UPDATE SET
+           fails = CASE WHEN window_start_ms <= ? - ? THEN 1 ELSE fails + 1 END,
+           window_start_ms = CASE WHEN window_start_ms <= ? - ? THEN ? ELSE window_start_ms END
+         RETURNING fails`,
+        key, nowMs, nowMs, windowMs, nowMs, windowMs, nowMs,
+      ),
+    );
+    return Number(row?.fails ?? 1);
+  }
   /** One upsert: counts the failure, resets an old window, locks at `max` failures. */
   async recordAuthFailure(client: string, nowMs: number, max: number, windowMs: number, lockMs: number): Promise<void> {
     await this.run(

@@ -6,11 +6,14 @@
  *  - callback queries are answered within the same request so the button stops spinning
  */
 import { decodeCallback } from "../adapters/callbacks";
-import { renderReply } from "../adapters/render-placeholder";
+import { f2 } from "../adapters/glance-fmt";
+import { renderOk, renderText } from "../adapters/render-commands";
 import { constantTimeEqual } from "../adapters/util";
-import { applyAck, runIntent, setMute } from "./actions";
+import { ackAndMove } from "./ackmove";
+import { handleButton, PENDING_MOVE_KEY, readPendingMove } from "./buttons";
+import { runCommand } from "./commands";
 import type { Ctx } from "./env";
-import { parseCommand } from "./intents";
+import { parseCommand, parseMoveInput } from "./intents";
 import { ApiError } from "./validate";
 
 const MAX_BODY = 65_536;
@@ -18,7 +21,7 @@ const empty = (status: number): Response => new Response(null, { status, headers
 
 interface TgUpdate {
   update_id?: number;
-  message?: { chat?: { id?: number | string }; text?: string };
+  message?: { chat?: { id?: number | string }; text?: string; reply_to_message?: { message_id?: number; text?: string } };
   callback_query?: { id?: string; data?: string; from?: { id?: number | string }; message?: { message_id?: number; chat?: { id?: number | string } } };
 }
 
@@ -58,44 +61,52 @@ export async function handleWebhook(request: Request, ctx: Ctx): Promise<Respons
 
   try {
     if (cb && typeof cb.id === "string") await handleCallback(ctx, cb);
-    else if (typeof update.message?.text === "string") {
-      const intent = parseCommand(update.message.text);
-      if (intent) {
-        const reply = await runIntent(ctx, intent);
-        if (intent.type !== "test") await ctx.telegram.sendMessage(renderReply(reply));
-      }
-    }
+    else if (typeof update.message?.text === "string") await handleMessage(ctx, update.message as { text: string; reply_to_message?: { message_id?: number; text?: string } });
   } catch (e) {
     console.error("webhook error", (e as { name?: string })?.name ?? "unknown"); // name only: never message text
   }
   return empty(200);
 }
 
+async function handleMessage(ctx: Ctx, msg: { text: string; reply_to_message?: { message_id?: number; text?: string } }): Promise<void> {
+  // A reply to the "Type a value" prompt finishes an Ack + move.
+  const replyTo = msg.reply_to_message?.message_id;
+  if (replyTo !== undefined && !msg.text.startsWith("/")) {
+    const pending = await readPendingMove(ctx);
+    if (pending && pending.promptId === replyTo) {
+      const parsed = parseMoveInput(msg.text);
+      if (!parsed) {
+        await ctx.telegram.sendMessage(renderText("Not understood. Send a price like 148.00 or a percent like +3%."));
+        return;
+      }
+      const r = await ackAndMove(ctx, pending.symbol, pending.rule, parsed, { cycle: pending.cycle, messageId: pending.messageId });
+      if (r.ok) {
+        await ctx.store.setMeta(PENDING_MOVE_KEY, "");
+        await ctx.telegram.sendMessage(renderOk(pending.symbol, `${pending.rule} moved`, [`${f2(r.from)} → ${f2(r.to)}. Re-armed.`]));
+      } else {
+        if (r.kind === "STALE") await ctx.store.setMeta(PENDING_MOVE_KEY, "");
+        await ctx.telegram.sendMessage(renderText(r.reason)); // an input problem keeps the prompt open for another try
+      }
+      return;
+    }
+    // A reply to one of our prompts that is no longer the live one (expired or replaced).
+    if (msg.reply_to_message?.text?.startsWith("⌨ Reply with the new ")) {
+      await ctx.telegram.sendMessage(renderText("That prompt expired. Tap Ack + move again."));
+      return;
+    }
+  }
+  const intent = parseCommand(msg.text);
+  if (!intent) return;
+  const reply = await runCommand(ctx, intent);
+  if (reply) await ctx.telegram.sendMessage(reply);
+}
+
 async function handleCallback(ctx: Ctx, cb: NonNullable<TgUpdate["callback_query"]>): Promise<void> {
   const id = cb.id as string;
   const action = decodeCallback(cb.data);
-  const msgId = cb.message?.message_id;
   let answer = "Not understood";
   try {
-    if (action?.type === "ack") {
-      if (action.symbol === "TEST") {
-        answer = "Test acknowledged";
-        if (msgId) await ctx.telegram.editMessageReplyMarkup(msgId, null).catch(() => undefined);
-      } else {
-        const done = await applyAck(ctx, { symbol: action.symbol, rule: action.rule, cycle: action.cycle }, "telegram");
-        answer = done ? "Acknowledged" : "Already acknowledged";
-        // Remove the stale keyboard even when the state had already changed.
-        if (!done && msgId) await ctx.telegram.editMessageReplyMarkup(msgId, null).catch(() => undefined);
-      }
-    } else if (action?.type === "ackall") {
-      const done = await applyAck(ctx, { all: true }, "ackall");
-      answer = done ? `Acknowledged ${done}` : "Nothing to acknowledge";
-    } else if (action?.type === "mute") {
-      await setMute(ctx, action.symbol, action.minutes);
-      answer = `${action.symbol} muted ${action.minutes} min`;
-    } else if (action?.type === "ackmove") {
-      answer = "Not available yet"; // FR-4.7 is P1
-    }
+    if (action) answer = await handleButton(ctx, action, cb.message?.message_id);
   } catch (e) {
     answer = e instanceof ApiError ? e.message.slice(0, 100) : "Error";
   }

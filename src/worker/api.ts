@@ -1,7 +1,14 @@
 /** Dashboard JSON API under /api/* (FR-8, FR-2.6, FR-11.4). Same-origin only, Bearer access code. */
 import { nyDate } from "../adapters/util";
-import { DEFAULT_SETTINGS, type LogKind, type RuleKind } from "../core/ports";
-import { applyAck, removeStock, saveStock, setMute } from "./actions";
+import { DEFAULT_SETTINGS, type Baseline, type LogKind, type MarketState, type RuleKind, type StockConfig } from "../core/ports";
+import { isValidTradingDate } from "./dates";
+import { ackAndMove } from "./ackmove";
+import { parseMoveInput } from "./intents";
+import { CALENDAR_VALID_UNTIL, nextOpen, sessionFor } from "../core/calendar";
+import { avgCumAt } from "../core/rules";
+import { MIN } from "../core/time";
+import { explainWhy } from "./why";
+import { setPausedAll, applyAck, removeStock, saveStock, setMute } from "./actions";
 import { authenticate } from "./auth";
 import { APP_VERSION, type Ctx } from "./env";
 import { errorResponse, json, readJson, text } from "./http";
@@ -33,8 +40,9 @@ async function route(request: Request, ctx: Ctx, url: URL): Promise<Response> {
   if (path === "/api/state") {
     allow(m, "GET");
     const date = nyDate(now);
-    const snap = await ctx.store.dashboardSnapshot(date);
-    return json({ version: APP_VERSION, serverTimeMs: now, date, maxStocks: MAX_STOCKS, ...snap });
+    const [snap, baselines] = await Promise.all([ctx.store.dashboardSnapshot(date), ctx.store.getBaselines()]);
+    const market = snap.market.map((m) => ({ ...m, baseline: baselineInfo(m, snap.stocks.find((s) => s.symbol === m.symbol), baselines.find((b) => b.symbol === m.symbol), date, now) }));
+    return json({ version: APP_VERSION, serverTimeMs: now, date, maxStocks: MAX_STOCKS, ...snap, market, marketStatus: marketStatus(now, date), pausedAll: snap.stocks.some((s) => s.enabled) && snap.stocks.filter((s) => s.enabled).every((s) => s.paused) });
   }
 
   if (path === "/api/stocks") {
@@ -76,10 +84,13 @@ async function route(request: Request, ctx: Ctx, url: URL): Promise<Response> {
 
   if (path === "/api/mute") {
     allow(m, "POST");
-    const b = (await readJson(request)) as Record<string, unknown>;
-    const minutes = b.minutes === null ? null : Number(b.minutes);
-    if (minutes !== null && (!Number.isInteger(minutes) || minutes <= 0 || minutes > 7 * 1440)) throw new ApiError(400, "INVALID_INPUT", "minutes: whole number up to 10080, or null to unmute");
-    await setMute(ctx, validateSymbol(b.symbol), minutes);
+    const b = (await readJson(request)) as unknown;
+    if (typeof b !== "object" || b === null || Array.isArray(b)) throw new ApiError(400, "INVALID_INPUT", "body: must be an object");
+    const raw = (b as Record<string, unknown>).minutes;
+    // a real number only (no strings, no booleans); null unmutes
+    if (raw !== null && (typeof raw !== "number" || !Number.isInteger(raw) || raw < 1 || raw > 1440)) throw new ApiError(400, "INVALID_INPUT", "minutes: whole number from 1 to 1440, or null to unmute");
+    const minutes = raw as number | null;
+    await setMute(ctx, validateSymbol((b as Record<string, unknown>).symbol), minutes);
     return json({ ok: true });
   }
 
@@ -137,6 +148,41 @@ async function route(request: Request, ctx: Ctx, url: URL): Promise<Response> {
     return json({ log: rows });
   }
 
+  if (path === "/api/ack-move") {
+    allow(m, "POST");
+    const b = (await readJson(request)) as Record<string, unknown>;
+    if (typeof b !== "object" || b === null || Array.isArray(b)) throw new ApiError(400, "INVALID_INPUT", "body: must be an object");
+    const symbol = validateSymbol(b.symbol);
+    if (b.rule !== "HIGH" && b.rule !== "LOW") throw new ApiError(400, "INVALID_INPUT", "rule: must be HIGH or LOW");
+    if (typeof b.cycle !== "number" || !Number.isInteger(b.cycle) || b.cycle < 0) throw new ApiError(400, "INVALID_INPUT", "cycle: must be a whole number");
+    if (typeof b.value !== "string") throw new ApiError(400, "INVALID_INPUT", "value: must be text such as +1%, 2%, $150 or 150");
+    const how = parseMoveInput(b.value);
+    if (!how) throw new ApiError(400, "INVALID_INPUT", "value: use a price (150 or $150) or a percent further out (+1%, 2%)");
+    const r = await ackAndMove(ctx, symbol, b.rule, how, { cycle: b.cycle });
+    if (!r.ok) throw new ApiError(r.kind === "STALE" ? 409 : 400, r.kind === "STALE" ? "STALE_ALERT" : "INVALID_INPUT", r.reason);
+    return json({ ok: true, newThreshold: r.to });
+  }
+
+  if (path === "/api/pause-all") {
+    allow(m, "POST");
+    const b = (await readJson(request)) as Record<string, unknown>;
+    if (typeof b !== "object" || b === null || typeof b.paused !== "boolean") throw new ApiError(400, "INVALID_INPUT", "paused: must be true or false");
+    const changed = await setPausedAll(ctx, b.paused);
+    return json({ ok: true, paused: b.paused, changed });
+  }
+
+  if (path === "/api/why") {
+    allow(m, "GET");
+    const symbol = validateSymbol(url.searchParams.get("symbol"));
+    const t = /^(\d{1,2}):(\d{2})$/.exec(url.searchParams.get("t") ?? "");
+    if (!t || Number(t[1]) > 23 || Number(t[2]) > 59) throw new ApiError(400, "INVALID_INPUT", "t: use HH:MM (New York time)");
+    const dateRaw = url.searchParams.get("date") ?? nyDate(now);
+    if (!isValidTradingDate(dateRaw)) throw new ApiError(400, "INVALID_INPUT", `date: a real day as YYYY-MM-DD, from 2026-01-01 to ${CALENDAR_VALID_UNTIL}`);
+    const w = await explainWhy(ctx, symbol, dateRaw, Number(t[1]), Number(t[2]));
+    if ("error" in w) throw new ApiError(422, "NOT_YET", w.error);
+    return json(w);
+  }
+
   if (path === "/api/test") {
     allow(m, "POST");
     await ctx.notifier.send({ type: "TEST_ALERT" });
@@ -150,4 +196,46 @@ async function route(request: Request, ctx: Ctx, url: URL): Promise<Response> {
 export function csvCell(v: string): string {
   const s = /^[=+\-@\t\r]/.test(v) ? `'${v}` : v;
   return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+export interface MarketStatus {
+  status: "OPEN" | "CLOSED" | "EARLY_CLOSE";
+  reason?: string;
+  opensMs?: number;
+  closesMs?: number;
+  calendarValidUntil: string;
+}
+
+/** Market status from the core calendar. EARLY_CLOSE = an open session that ends early today. */
+export function marketStatus(now: number, date: string): MarketStatus {
+  const s = sessionFor(date);
+  const base = { calendarValidUntil: CALENDAR_VALID_UNTIL };
+  if (s.kind === "expired") return { status: "CLOSED", reason: "Calendar expired", ...base };
+  if (s.kind === "closed") return { status: "CLOSED", reason: s.closedReason, opensMs: nextOpen(now) ?? undefined, ...base };
+  if (now >= s.open && now < s.close) return { status: s.early ? "EARLY_CLOSE" : "OPEN", closesMs: s.close, ...(s.early ? { reason: "Early close" } : {}), ...base };
+  return { status: "CLOSED", reason: now < s.open ? "Before the open" : "After the close", opensMs: nextOpen(now) ?? undefined, ...base };
+}
+
+export interface BaselineInfo {
+  status: "OK" | "BUILDING" | "NO_BASELINE";
+  multiple?: number;
+  avgCumNow?: number;
+  thresholdShares?: number;
+}
+
+/** Per-stock volume baseline facts for the dashboard (one getBaselines query for all stocks). */
+export function baselineInfo(m: MarketState, stock: StockConfig | undefined, b: Baseline | undefined, date: string, now: number): BaselineInfo {
+  if (!b) return { status: "NO_BASELINE" };
+  const out: BaselineInfo = { status: b.status };
+  const s = sessionFor(date);
+  if (b.status === "OK" && s.kind === "open" && now >= s.open) {
+    const avg = avgCumAt(b, (Math.min(now, s.close) - s.open) / MIN);
+    if (avg > 0) {
+      out.avgCumNow = avg;
+      if (m.cumVolume !== undefined) out.multiple = m.cumVolume / avg;
+      if (stock?.volume?.mode === "multiple") out.thresholdShares = stock.volume.value * avg;
+    }
+  }
+  if (stock?.volume?.mode === "absolute") out.thresholdShares = stock.volume.value;
+  return out;
 }

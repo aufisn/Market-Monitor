@@ -10,7 +10,7 @@ import * as core from "../core/engine";
 import { nyDate, realSleep } from "../adapters/util";
 import { buildCtx, missingSecrets, type Ctx, type Deps, type Env } from "./env";
 import { drainOutbound } from "./outbox";
-import { renderPlaceholder } from "../adapters/render-placeholder";
+import { renderGlance } from "../adapters/render-glance";
 
 export const WORK_START_UTC_HOUR = 11; // 07:00 ET (EDT) / 06:00 ET (EST), the earliest pre-open work
 export const WORK_END_UTC_HOUR = 22; // exclusive: covers SESSION ENDED after a 16:00 ET close in both clock settings
@@ -85,7 +85,10 @@ export async function runScheduledJob(env: Env, deps: ScheduledDeps = {}): Promi
     // Send what the engine queued (alerts first by priority); first tick always checks for backlog.
     if (status !== "idle" && status !== "expired" && (i === 0 || ctx.store.queueDirty)) {
       try {
-        await drainOutbound(ctx.store, ctx.notifier, nyDate(start), start, 3);
+        // Send only as many messages as the rest of the call budget can pay for (about 6 D1 trips and 2 fetches each).
+        const room = Math.min(Math.floor((ctx.d1counter.remaining - 3) / 6), Math.floor((ctx.counter.remaining - 1) / 2));
+        const max = Math.max(0, Math.min(3, room));
+        if (max > 0) await drainOutbound(ctx.store, ctx.notifier, nyDate(start), start, max);
       } catch (e) {
         console.error("drain failed", (e as { name?: string })?.name ?? "unknown");
       }
@@ -124,7 +127,7 @@ async function failSafe(env: Env, missing: string[], deps: ScheduledDeps): Promi
     const day = new Date(ctx.now()).toISOString().slice(0, 10);
     if ((await ctx.store.getMeta("notice_secrets_day")) === day) return;
     await ctx.store.setMeta("notice_secrets_day", day);
-    await ctx.telegram.sendMessage(renderPlaceholder({ type: "OPS_NOTICE", code: "MISSING_SECRETS", detail: `Alerting is stopped. Missing settings: ${missing.join(", ")}` }));
+    await ctx.telegram.sendMessage(renderGlance({ type: "OPS_NOTICE", code: "MISSING_SECRETS", detail: `Alerting is stopped. Missing settings: ${missing.join(", ")}` }, { nowMs: ctx.now(), dashboardUrl: ctx.dashboardUrl }));
   } catch {
     /* nothing more we can do */
   }

@@ -1,0 +1,22 @@
+/* Quick checks for public/lib.js. Run: node test/ui/lib-check.mjs */
+import assert from "node:assert/strict";
+import * as L from "../../public/lib.js";
+const T = Date.UTC(2026, 10, 24, 15, 42);
+assert.equal(L.both(T), "10:42 ET / 19:42 Muscat");
+assert.equal(L.both(L.etWallToMs("2026-11-24", 16, 0)), "16:00 ET / 01:00+1 Muscat");
+assert.equal(L.etWallToMs("2026-07-01", 9, 30), Date.UTC(2026, 6, 1, 13, 30));
+assert.equal(L.marketClock(T, null).status, "OPEN");
+assert.equal(L.marketClock(Date.UTC(2026, 10, 28, 18, 0), null).reason, "weekend");
+assert.equal(L.freshness(61, true), "amber"); assert.equal(L.freshness(301, true), "red"); assert.equal(L.freshness(10, true), "fresh"); assert.equal(L.freshness(999, false), "closed");
+assert.equal(L.parseNum("$1,5"), 1.5); assert.ok(Number.isNaN(L.parseNum("1e3x")));
+assert.equal(L.evalThreshold({ which: "high", mode: "dollar", text: "190", prev: 189.5, last: 190.2 }).crossed, true);
+assert.equal(L.evalThreshold({ which: "low", mode: "percent", text: "-5", prev: 100, last: 99 }).price, 95);
+assert.equal(L.evalThreshold({ which: "high", mode: "dollar", text: "90", prev: 100, last: 99, otherPrice: 95 }).state, "error");
+const stock = { symbol: "X", enabled: true, high: { mode: "dollar", value: 110 }, low: { mode: "dollar", value: 90 } };
+const mkt = { symbol: "X", last: { t: T - 5000, p: 108 }, prev: { close: 100 }, open: 101 };
+assert.equal(L.buildVM(stock, mkt, [], { nearPct: 20 }, T, true).status, "NEAR");
+assert.equal(L.buildVM(stock, undefined, [], {}, T, true).status, "NODATA");
+assert.equal(L.buildVM({ ...stock, paused: true }, mkt, [], {}, T, true).status, "PAUSED");
+assert.equal(L.buildVM(stock, mkt, [{ symbol: "X", rule: "HIGH", state: "TRIGGERED" }], {}, T, true).status, "CROSSED");
+assert.equal(L.dataStatus(T, T - 200000, true).key, "DELAYED"); assert.equal(L.dataStatus(T, null, true).key, "NODATA");
+console.log("lib-check ok");

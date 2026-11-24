@@ -1,5 +1,55 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Market Monitor</title></head>
-<body><!-- placeholder until DG-3: the real dashboard replaces this file -->
-<p>Market Monitor dashboard placeholder.</p></body></html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Market Monitor</title>
+<meta name="description" content="Price and volume alerts for a US stock watchlist.">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#eef0f4" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0d1015" media="(prefers-color-scheme: dark)">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="head" id="head">
+  <div class="wrap">
+    <div class="hl" id="hl1">
+      <span class="brand">Market Monitor</span>
+      <strong id="hMarket" class="mk-closed">Market status loading</strong>
+      <span id="hMarketNote" class="sm"></span>
+    </div>
+    <div class="hl" id="hl2">
+      <span id="hData" class="chip">Data ...</span>
+      <span id="hPoll" class="sm"></span>
+      <span id="hUnack" class="chip"></span>
+    </div>
+    <div class="hl sm" id="hl3">
+      <span id="hReminder"></span>
+      <span id="hHealth"></span>
+    </div>
+    <div class="tabs" role="tablist" aria-label="Dashboard sections" id="tabs">
+      <button type="button" class="tab" role="tab" id="tab-watchlist" data-tab="watchlist" aria-controls="main">WATCHLIST</button>
+      <button type="button" class="tab" role="tab" id="tab-alerts" data-tab="alerts" aria-controls="main">ALERTS<span class="badge" id="alertBadge" hidden></span></button>
+      <button type="button" class="tab" role="tab" id="tab-briefing" data-tab="briefing" aria-controls="main">BRIEFING</button>
+      <button type="button" class="tab" role="tab" id="tab-settings" data-tab="settings" aria-controls="main">SETTINGS</button>
+      <button type="button" class="tab" role="tab" id="tab-log" data-tab="log" aria-controls="main">LOG</button>
+    </div>
+  </div>
+</header>
+
+<div class="wrap"><p id="offline" class="notice bad" role="alert" hidden></p></div>
+<main id="main" class="wrap" tabindex="-1" role="tabpanel">
+  <noscript><p class="notice bad">This dashboard needs JavaScript.</p></noscript>
+</main>
+
+<dialog id="sheet" class="sheet" aria-labelledby="sheetTitle"></dialog>
+<div id="toast" role="status" aria-live="polite"></div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
