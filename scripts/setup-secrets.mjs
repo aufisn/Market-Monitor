@@ -26,15 +26,34 @@ function die(msg) {
   process.exit(1);
 }
 
+// Hidden input in raw mode: no character is ever echoed. Refuses to run without a TTY,
+// so a secret can never be read from a pipe that might also be logged.
 function askHidden(question) {
   return new Promise((resolve) => {
-    const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: true });
-    rl._writeToOutput = (s) => { if (s.includes(question)) process.stdout.write(s); };
-    rl.question(question, (answer) => {
-      rl.close();
-      process.stdout.write("  (received)\n");
-      resolve(answer.trim());
-    });
+    const stdin = process.stdin;
+    if (!stdin.isTTY) die("Run this in an interactive terminal.");
+    process.stdout.write(question);
+    let value = "";
+    stdin.setRawMode(true);
+    stdin.resume();
+    stdin.setEncoding("utf8");
+    const onData = (chunk) => {
+      for (const ch of chunk) {
+        if (ch === "\u0003") { stdin.setRawMode(false); process.stdout.write("\n"); process.exit(130); } // Ctrl-C
+        if (ch === "\r" || ch === "\n") {
+          stdin.removeListener("data", onData);
+          stdin.setRawMode(false);
+          stdin.pause();
+          process.stdout.write(value ? "(received)\n" : "(empty)\n");
+          resolve(value.replace(/\[20[01]~/g, "").trim()); // strip bracketed-paste markers
+          return;
+        }
+        if (ch === "\u007f" || ch === "\b") { value = value.slice(0, -1); continue; } // backspace
+        if (ch === "\u001b") continue; // ignore escape sequences' lead byte
+        if (ch >= " ") value += ch; // printable only (also drops bracketed-paste markers' controls)
+      }
+    };
+    stdin.on("data", onData);
   });
 }
 
