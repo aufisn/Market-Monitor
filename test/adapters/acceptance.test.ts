@@ -114,8 +114,8 @@ describe("AT-17 calls per run stay within 45 for 30 stocks across a full tick lo
   it("8 of 30 stocks alert, then remind: outbound calls and D1 round trips each <= 45 in all 12 runs", async () => {
     await at17(8, 45);
   });
-  it("worst case, all 30 cross in one poll: outbound <= 45; D1 stays under the platform's 50 (engine alone uses 47: core budget gap, reported)", async () => {
-    await at17(30, 50);
+  it("worst case, all 30 cross in one poll: outbound <= 45; D1 round trips <= 45", async () => {
+    await at17(30, 45);
   });
 });
 

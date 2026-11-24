@@ -91,63 +91,109 @@ export async function flush(store: Store, out: Out, date: TradingDate): Promise<
 export const persist = (store: Store, next: RuleState, expected: number): Promise<boolean> =>
   store.putRuleState({ ...next, version: expected + 1 }, expected);
 
-/** First alert (FR-4.1) or late alert (FR-9.3). Returns the stored TRIGGERED state, or null if another run owns this alert id. */
-export async function fireAlert(
-  store: Store, out: Out, s: RuleState, o: Obs, market: MarketState, nowMs: number, set: Settings,
-  late?: { barTimeMs: number; barPrice: number },
-): Promise<RuleState | null> {
-  const cycle = s.cycle + 1;
-  if (!(await store.claimAlertId(s.date, s.symbol, s.rule, cycle))) {
-    out.logs.push({ tMs: nowMs, kind: "SUPPRESSED", symbol: s.symbol, rule: s.rule, detail: { reason: "duplicate alert id", cycle } });
-    return null;
-  }
-  const next = triggered(s, o.crossing!.value, o.threshold, o.crossing!.touchedAtMs, !!late, nowMs, set);
-  let base = s.version;
-  let ok = await persist(store, next, base);
-  if (!ok) {
-    const cur = await store.getRuleState(s.date, s.symbol, s.rule);
-    if (!cur || cur.state !== "ARMED" || cur.cycle !== s.cycle) return null;
-    base = cur.version;
-    if (!(await persist(store, next, base))) return null;
-  }
-  const stored = { ...next, version: base + 1 };
-  const ev: OutboundEvent = late
-    ? { type: "LATE_ALERT", rule: stored, market, threshold: o.threshold, barTimeMs: late.barTimeMs, barPrice: late.barPrice }
-    : { type: "FIRST_ALERT", rule: stored, market, threshold: o.threshold };
-  await emit(store, out, ev, nowMs);
-  out.logs.push({
-    tMs: nowMs, kind: late ? "LATE_ALERT" : "FIRST_ALERT", symbol: s.symbol, rule: s.rule,
-    detail: { value: o.crossing!.value, threshold: o.threshold, touchedAtMs: o.crossing!.touchedAtMs, cycle },
-  });
-  bump(out, late ? "lateAlerts" : "alerts");
-  return stored;
+// ---- batched helpers (one round trip when the store supports it, else one call per item)
+export async function putMany(store: Store, items: { next: RuleState; expected: number }[]): Promise<boolean[]> {
+  if (!items.length) return [];
+  const w = items.map((i) => ({ state: { ...i.next, version: i.expected + 1 }, expectedVersion: i.expected }));
+  if (store.putRuleStates) return store.putRuleStates(w);
+  const r: boolean[] = [];
+  for (const i of w) r.push(await store.putRuleState(i.state, i.expectedVersion));
+  return r;
+}
+
+export async function emitMany(store: Store, out: Out, events: OutboundEvent[], nowMs: number): Promise<void> {
+  if (!events.length) return;
+  if (store.enqueueMany) await store.enqueueMany(events.map((event) => ({ event, priority: EVENT_PRIORITY[event.type], nowMs })));
+  else for (const e of events) await store.enqueue(e, EVENT_PRIORITY[e.type], nowMs);
+  out.events += events.length;
+}
+
+export interface FireItem {
+  s: RuleState;
+  o: Obs;
+  market: MarketState;
+  set: Settings;
+  late?: { barTimeMs: number; barPrice: number };
 }
 
 /**
- * Reminders for rules found due (FR-4.2). FR-4.5: each rule is re-read from the
- * store right before sending and written with a version check, so an
+ * First alerts (FR-4.1) and late alerts (FR-9.3) for many rules at once:
+ * claim ids (FR-4.10) -> write states -> enqueue events, one batched call each.
+ * Returns the stored TRIGGERED states; rules whose id another run already owns are left out.
+ */
+export async function fireAlerts(store: Store, out: Out, items: FireItem[], nowMs: number): Promise<Map<string, RuleState>> {
+  const done = new Map<string, RuleState>();
+  if (!items.length) return done;
+  const ids = items.map((i) => ({ date: i.s.date, symbol: i.s.symbol, rule: i.s.rule, cycle: i.s.cycle + 1 }));
+  let claims: boolean[];
+  if (store.claimAlertIds) claims = await store.claimAlertIds(ids);
+  else {
+    claims = [];
+    for (const i of ids) claims.push(await store.claimAlertId(i.date, i.symbol, i.rule, i.cycle));
+  }
+  const won = items.filter((_, k) => {
+    if (!claims[k]) out.logs.push({ tMs: nowMs, kind: "SUPPRESSED", symbol: ids[k]!.symbol, rule: ids[k]!.rule, detail: { reason: "duplicate alert id", cycle: ids[k]!.cycle } });
+    return claims[k];
+  });
+  const nexts = won.map((i) => triggered(i.s, i.o.crossing!.value, i.o.threshold, i.o.crossing!.touchedAtMs, !!i.late, nowMs, i.set));
+  const oks = await putMany(store, won.map((i, k) => ({ next: nexts[k]!, expected: i.s.version })));
+  const events: OutboundEvent[] = [];
+  for (let k = 0; k < won.length; k++) {
+    const i = won[k]!;
+    let base = i.s.version;
+    if (!oks[k]) {
+      // Rare: the row moved under us. Retry once if it is still the same ARMED cycle.
+      const cur = await store.getRuleState(i.s.date, i.s.symbol, i.s.rule);
+      if (!cur || cur.state !== "ARMED" || cur.cycle !== i.s.cycle) continue;
+      base = cur.version;
+      if (!(await persist(store, nexts[k]!, base))) continue;
+    }
+    const stored = { ...nexts[k]!, version: base + 1 };
+    done.set(ruleKey(i.s.symbol, i.s.rule), stored);
+    events.push(
+      i.late
+        ? { type: "LATE_ALERT", rule: stored, market: i.market, threshold: i.o.threshold, barTimeMs: i.late.barTimeMs, barPrice: i.late.barPrice }
+        : { type: "FIRST_ALERT", rule: stored, market: i.market, threshold: i.o.threshold },
+    );
+    out.logs.push({
+      tMs: nowMs, kind: i.late ? "LATE_ALERT" : "FIRST_ALERT", symbol: i.s.symbol, rule: i.s.rule,
+      detail: { value: i.o.crossing!.value, threshold: i.o.threshold, touchedAtMs: i.o.crossing!.touchedAtMs, cycle: stored.cycle },
+    });
+    bump(out, i.late ? "lateAlerts" : "alerts");
+  }
+  await emitMany(store, out, events, nowMs);
+  return done;
+}
+
+/**
+ * Reminders for rules found due (FR-4.2). FR-4.5: the stored rows are re-read in
+ * one query right before sending and written with a version check, so an
  * acknowledgment that landed first wins. FR-4.13: one message per stock.
  */
 export async function sendDueReminders(
   store: Store, out: Out, due: RuleState[], markets: Map<string, MarketState>,
   backInside: Map<string, boolean>, nowMs: number, settingsFor: (symbol: string) => Settings,
 ): Promise<void> {
+  if (!due.length) return;
+  const fresh = new Map((await store.getRuleStates(due[0]!.date)).map((r) => [ruleKey(r.symbol, r.rule), r]));
+  const cands: { f: RuleState; next: RuleState }[] = [];
+  for (const r of due) {
+    const f = fresh.get(ruleKey(r.symbol, r.rule));
+    if (f && reminderDue(f, nowMs)) cands.push({ f, next: advanceReminder(f, nowMs, settingsFor(f.symbol)) }); // else acknowledged, closed, or already sent
+  }
+  const oks = await putMany(store, cands.map((c) => ({ next: c.next, expected: c.f.version })));
   const bySymbol = new Map<string, RuleState[]>();
-  for (const s of due) bySymbol.set(s.symbol, [...(bySymbol.get(s.symbol) ?? []), s]);
-  for (const [symbol, rules] of bySymbol) {
-    const sent: RuleState[] = [];
-    for (const r of rules) {
-      const fresh = await store.getRuleState(r.date, r.symbol, r.rule);
-      if (!fresh || !reminderDue(fresh, nowMs)) continue; // acknowledged, closed, or another run sent it
-      const next = advanceReminder(fresh, nowMs, settingsFor(symbol));
-      if (await persist(store, next, fresh.version)) sent.push({ ...next, version: fresh.version + 1 });
-    }
-    if (!sent.length) continue;
+  cands.forEach((c, k) => {
+    if (oks[k]) bySymbol.set(c.f.symbol, [...(bySymbol.get(c.f.symbol) ?? []), { ...c.next, version: c.f.version + 1 }]);
+  });
+  const events: OutboundEvent[] = [];
+  for (const [symbol, sent] of bySymbol) {
     const inside = sent.every((r) => backInside.get(ruleKey(r.symbol, r.rule)) === true);
-    await emit(store, out, { type: "REMINDER", rules: sent, market: markets.get(symbol) ?? { symbol, date: sent[0]!.date }, backInside: inside }, nowMs);
+    events.push({ type: "REMINDER", rules: sent, market: markets.get(symbol) ?? { symbol, date: sent[0]!.date }, backInside: inside });
     for (const r of sent) out.logs.push({ tMs: nowMs, kind: "REMINDER", symbol, rule: r.rule, detail: { n: r.remindersSent, backInside: inside } });
     bump(out, "reminders", sent.length);
   }
+  await emitMany(store, out, events, nowMs);
 }
 
 /** Acknowledge one rule (any channel). Retries on version conflicts; false if nothing active to acknowledge. */
@@ -189,11 +235,8 @@ export async function rearmAfterEdit(store: Store, date: TradingDate, symbol: st
 
 /** FR-4.8 / I-6: at the close, live alerts become UNACKNOWLEDGED_AT_CLOSE and stop reminding. */
 export async function closeActiveRules(store: Store, states: RuleState[]): Promise<RuleState[]> {
-  const closed: RuleState[] = [];
-  for (const s of states) {
-    if (!isActive(s)) continue;
-    const next: RuleState = { ...s, state: "UNACKNOWLEDGED_AT_CLOSE" as AlertState, nextReminderMs: undefined };
-    if (await persist(store, next, s.version)) closed.push({ ...next, version: s.version + 1 });
-  }
-  return closed;
+  const live = states.filter(isActive);
+  const nexts = live.map((s) => ({ ...s, state: "UNACKNOWLEDGED_AT_CLOSE" as AlertState, nextReminderMs: undefined }));
+  const oks = await putMany(store, live.map((s, k) => ({ next: nexts[k]!, expected: s.version })));
+  return nexts.map((n, k) => ({ ...n, version: live[k]!.version + 1 })).filter((_, k) => oks[k]);
 }

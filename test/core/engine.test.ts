@@ -160,14 +160,11 @@ describe("AT-5 acknowledge by any channel stops reminders", () => {
 describe("AT-6 acknowledgment race", () => {
   it("ack lands between the run's load and the pre-send re-read: no reminder", async () => {
     const r = await alerted();
-    let done = false;
-    r.store.beforeGetRuleState = async () => {
-      if (done) return;
-      done = true;
-      const save = r.store.beforeGetRuleState;
-      r.store.beforeGetRuleState = undefined;
+    let calls = 0;
+    r.store.beforeGetRuleStates = async () => {
+      if (++calls !== 2) return; // 1 = the run's own load, 2 = the pre-send re-read
+      r.store.beforeGetRuleStates = undefined;
       await acknowledge(r.store, D, "AAA", "HIGH", "telegram", at("10:10"));
-      r.store.beforeGetRuleState = save;
     };
     await go(r, at("10:10:00"), 111);
     expect(r.store.count("REMINDER")).toBe(0);
@@ -272,6 +269,19 @@ describe("AT-8 volume", () => {
     expect(r.store.rule(D, "AAA", "VOLUME")!.state).toBe("ACKNOWLEDGED");
     await go(r, at("10:30"), 100, { cum: 122_000 }); // threshold 2 x 120,000 = 240,000: far below
     expect(r.store.rule(D, "AAA", "VOLUME")!.state).toBe("ARMED");
+  });
+});
+
+describe("store without batched methods (fallbacks)", () => {
+  it("alerts, reminders and close work with single-call stores only", async () => {
+    const r = rig();
+    for (const k of ["claimAlertIds", "putRuleStates", "enqueueMany"] as const) (r.store as unknown as Record<string, unknown>)[k] = undefined;
+    await go(r, at("10:00"), 111, { lo: 89 });
+    await go(r, at("10:10"), 111);
+    await go(r, at("16:00"), 111);
+    expect(r.store.count("FIRST_ALERT")).toBe(2);
+    expect(r.store.count("REMINDER")).toBe(1);
+    expect(r.store.count("UNACK_AT_CLOSE")).toBe(1);
   });
 });
 
@@ -524,7 +534,7 @@ describe("opening briefing, ready, close, errors, budget", () => {
     // everything fires at once: budget caps the work, the rest follows next poll
     for (const s of stocks) r.market.snaps[s.symbol] = snap(s.symbol, 111, at("10:01"), { cum: 1000 });
     const storm = await runTick(r.ports, at("10:01"));
-    expect(storm.calls).toBeLessThanOrEqual(CALL_BUDGET);
+    expect(storm.calls).toBeLessThanOrEqual(16); // batched claim/put/enqueue: a constant number of calls
     expect(storm.events).toBeGreaterThan(0);
     for (const s of stocks) r.market.snaps[s.symbol] = snap(s.symbol, 111, at("10:01:15"), { cum: 1000 });
     for (let i = 0; i < 12; i++) {

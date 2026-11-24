@@ -245,6 +245,10 @@ export interface Store {
   putRuleState(s: RuleState, expectedVersion: number): Promise<boolean>;
   /** FR-4.10 — insert alert id (date,symbol,rule,cycle); false if it already exists. */
   claimAlertId(date: TradingDate, symbol: Symbol, rule: RuleKind, cycle: number): Promise<boolean>;
+  /** Optional batched forms (one round trip each); core falls back to the single versions. Results are in input order. */
+  claimAlertIds?(ids: { date: TradingDate; symbol: Symbol; rule: RuleKind; cycle: number }[]): Promise<boolean[]>;
+  putRuleStates?(items: { state: RuleState; expectedVersion: number }[]): Promise<boolean[]>;
+  enqueueMany?(items: { event: OutboundEvent; priority: number; nowMs: number }[]): Promise<void>;
 
   // run bookkeeping (FR-9.1)
   getLastSuccessfulPollMs(): Promise<number | null>;

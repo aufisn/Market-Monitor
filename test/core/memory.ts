@@ -39,6 +39,7 @@ export class MemStore implements Store {
   nextId = 1;
   /** Test hooks to inject a concurrent action at a precise moment. */
   beforeGetRuleState?: () => Promise<void> | void;
+  beforeGetRuleStates?: () => Promise<void> | void;
   beforePutRuleState?: () => Promise<void> | void;
 
   async getSettings() { return clone(this.settings); }
@@ -63,7 +64,10 @@ export class MemStore implements Store {
   async putBaseline(b: Baseline) { this.baselines.set(b.symbol, clone(b)); }
   async getBaselines() { return [...this.baselines.values()].map(clone); }
 
-  async getRuleStates(date: TradingDate) { return [...this.rules.values()].filter((r) => r.date === date).map(clone); }
+  async getRuleStates(date: TradingDate) {
+    await this.beforeGetRuleStates?.();
+    return [...this.rules.values()].filter((r) => r.date === date).map(clone);
+  }
   async getRuleState(date: TradingDate, symbol: string, rule: RuleKind) {
     await this.beforeGetRuleState?.();
     return clone(this.rules.get(`${date}|${symbol}|${rule}`) ?? null);
@@ -75,6 +79,17 @@ export class MemStore implements Store {
     if ((cur?.version ?? 0) !== expectedVersion) return false;
     this.rules.set(key, { ...clone(s), version: expectedVersion + 1 });
     return true;
+  }
+  async claimAlertIds(ids: { date: TradingDate; symbol: string; rule: RuleKind; cycle: number }[]) {
+    return Promise.all(ids.map((i) => this.claimAlertId(i.date, i.symbol, i.rule, i.cycle)));
+  }
+  async putRuleStates(items: { state: RuleState; expectedVersion: number }[]) {
+    const r: boolean[] = [];
+    for (const i of items) r.push(await this.putRuleState(i.state, i.expectedVersion));
+    return r;
+  }
+  async enqueueMany(items: { event: OutboundEvent; priority: number; nowMs: number }[]) {
+    for (const i of items) await this.enqueue(i.event, i.priority, i.nowMs);
   }
   async claimAlertId(date: TradingDate, symbol: string, rule: RuleKind, cycle: number) {
     const k = `${date}|${symbol}|${rule}|${cycle}`;

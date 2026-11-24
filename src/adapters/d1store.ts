@@ -263,11 +263,20 @@ export class D1Store implements Store {
    * unchanged or already bumped. Returns false when someone else wrote first.
    */
   async putRuleState(s: RuleState, expectedVersion: number): Promise<boolean> {
+    return (await this.run(this.ruleStateStmt(s, expectedVersion))) === 1;
+  }
+
+  /** Batched optimistic writes: one D1 round trip, each row keeps its own version check. */
+  async putRuleStates(items: { state: RuleState; expectedVersion: number }[]): Promise<boolean[]> {
+    const res = await this.batch(items.map((i) => this.ruleStateStmt(i.state, i.expectedVersion)));
+    return items.map((_, i) => res[i]?.meta?.changes === 1);
+  }
+
+  private ruleStateStmt(s: RuleState, expectedVersion: number): D1PreparedStatement {
     const version = Math.max(s.version, expectedVersion + 1);
     const json = JSON.stringify({ ...s, version });
     const t = this.now();
-    const sql =
-      expectedVersion === 0
+    return expectedVersion === 0
         ? this.p(
             "INSERT INTO rule_state (date, symbol, rule, version, json, updated_ms) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(date, symbol, rule) DO UPDATE SET version = excluded.version, json = excluded.json, updated_ms = excluded.updated_ms WHERE rule_state.version = 0",
             s.date, s.symbol, s.rule, version, json, t,
@@ -276,7 +285,6 @@ export class D1Store implements Store {
             "UPDATE rule_state SET version = ?, json = ?, updated_ms = ? WHERE date = ? AND symbol = ? AND rule = ? AND version = ?",
             version, json, t, s.date, s.symbol, s.rule, expectedVersion,
           );
-    return (await this.run(sql)) === 1;
   }
 
   async claimAlertId(date: TradingDate, symbol: Symbol, rule: RuleKind, cycle: number): Promise<boolean> {
@@ -284,6 +292,15 @@ export class D1Store implements Store {
       this.p("INSERT OR IGNORE INTO alert_ids (date, symbol, rule, cycle, created_ms) VALUES (?, ?, ?, ?, ?)", date, symbol, rule, cycle, this.now()),
     );
     return changes === 1;
+  }
+
+  /** Batched INSERT OR IGNORE: one round trip; true where this caller inserted the id. */
+  async claimAlertIds(ids: { date: TradingDate; symbol: Symbol; rule: RuleKind; cycle: number }[]): Promise<boolean[]> {
+    const t = this.now();
+    const res = await this.batch(
+      ids.map((i) => this.p("INSERT OR IGNORE INTO alert_ids (date, symbol, rule, cycle, created_ms) VALUES (?, ?, ?, ?, ?)", i.date, i.symbol, i.rule, i.cycle, t)),
+    );
+    return ids.map((_, i) => res[i]?.meta?.changes === 1);
   }
 
   // ------------------------------------------------------------ run bookkeeping
@@ -308,6 +325,11 @@ export class D1Store implements Store {
   // ------------------------------------------------------------ outbound queue
   async enqueue(event: OutboundEvent, priority: number, nowMs: number): Promise<void> {
     await this.run(this.p("INSERT INTO outbound_queue (priority, created_ms, event) VALUES (?, ?, ?)", priority, nowMs, JSON.stringify(event)));
+    this.queueDirty = true;
+  }
+  async enqueueMany(items: { event: OutboundEvent; priority: number; nowMs: number }[]): Promise<void> {
+    if (!items.length) return;
+    await this.batch(items.map((i) => this.p("INSERT INTO outbound_queue (priority, created_ms, event) VALUES (?, ?, ?)", i.priority, i.nowMs, JSON.stringify(i.event))));
     this.queueDirty = true;
   }
   async dequeueBatch(limit: number): Promise<{ id: number; event: OutboundEvent }[]> {

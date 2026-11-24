@@ -3,14 +3,15 @@
  * One runTick = one poll. Nothing is held in memory between runs (FR-4.9).
  * Every port call is counted; optional work stops before 45 calls (PRD 1c).
  */
-import { applyObservation, bump, closeActiveRules, emit, fireAlert, flush, freshState, newOut, persist, reminderDue, ruleKey, sendDueReminders } from "./alerts";
+import { applyObservation, bump, closeActiveRules, emit, fireAlerts, flush, freshState, newOut, putMany, reminderDue, ruleKey, sendDueReminders } from "./alerts";
+import type { FireItem } from "./alerts";
 import { baselineProgress, baselineWindow, buildBaseline, pickNextBaseline } from "./baseline";
 import { calendarStatus, sessionFor } from "./calendar";
 import type { Session } from "./calendar";
 import { gapWindow, scanGap } from "./gapscan";
 import type { GapRule } from "./gapscan";
 import { EVENT_PRIORITY } from "./ports";
-import type { Baseline, MarketData, MarketState, OutboundEvent, Settings, Snapshot, StockConfig, Store, TradingDate } from "./ports";
+import type { Baseline, MarketData, MarketState, OutboundEvent, RuleState, Settings, Snapshot, StockConfig, Store, TradingDate } from "./ports";
 import { evaluatePrice, evaluateVolume, isFlaggedTrade, priceInsideBuffer, resolveThreshold, volumeInsideBuffer } from "./rules";
 import { MIN, nyDate, nyParts } from "./time";
 
@@ -233,14 +234,13 @@ async function tick(
         const syms = [...new Set(armed.map((r) => r.symbol))];
         const bars = await market.minuteBarsMulti(syms, win.startMs, win.endMs);
         const seeds = Object.fromEntries(syms.map((y) => [y, stored.get(y)?.recentMinuteCloses ?? []]));
+        const items: FireItem[] = [];
         for (const hit of scanGap(armed, bars, set0.spikeHoldPct, seeds)) {
-          if (!canSpend()) break;
-          const key = ruleKey(hit.symbol, hit.rule);
-          const cur = rs.get(key) ?? freshState(date, hit.symbol, hit.rule);
+          const cur = rs.get(ruleKey(hit.symbol, hit.rule)) ?? freshState(date, hit.symbol, hit.rule);
           const obs = { crossing: { value: hit.price, touchedAtMs: hit.barTimeMs }, threshold: hit.threshold, insideBuffer: false, held: null };
-          const next = await fireAlert(store, out, cur, obs, mem.get(hit.symbol)!, nowMs, settingsFor(hit.symbol), { barTimeMs: hit.barTimeMs, barPrice: hit.price });
-          if (next) rs.set(key, next);
+          items.push({ s: cur, o: obs, market: mem.get(hit.symbol)!, set: settingsFor(hit.symbol), late: { barTimeMs: hit.barTimeMs, barPrice: hit.price } });
         }
+        for (const [k, v] of await fireAlerts(store, out, items, nowMs)) rs.set(k, v);
       } catch {
         await once(store, m, date, noticeKey("GAP_SCAN_ERROR", nowMs), { type: "OPS_NOTICE", code: "GAP_SCAN_ERROR", detail: "Gap scan could not fetch bars." }, nowMs);
       }
@@ -249,6 +249,8 @@ async function tick(
 
   // --- evaluate every rule (FR-3)
   const backInside = new Map<string, boolean>();
+  const fires: FireItem[] = [];
+  const changes: { next: RuleState; expected: number }[] = [];
   const minutes = (nowMs - session.open) / MIN;
   for (const s of liveStocks) {
     const ms = mem.get(s.symbol)!;
@@ -283,22 +285,21 @@ async function tick(
       const cur = rs.get(key) ?? freshState(date, s.symbol, r.kind);
       const obs = { crossing: r.crossing, threshold: r.thr, insideBuffer: r.inside, held: r.held };
       const step = applyObservation(cur, obs, set);
-      if (step.fire) {
-        if (!canSpend()) continue; // stays ARMED; next poll retries
-        const next = await fireAlert(store, out, cur, obs, ms, nowMs, set);
-        if (next) rs.set(key, next);
-      } else if (step.next !== cur && (await persist(store, step.next, cur.version))) {
-        rs.set(key, { ...step.next, version: cur.version + 1 });
-      }
+      if (step.fire) fires.push({ s: cur, o: obs, market: ms, set });
+      else if (step.next !== cur) changes.push({ next: step.next, expected: cur.version });
     }
   }
+  // Batched writes: re-arms / held prices, then new alerts (claim -> write -> enqueue).
+  const oks = await putMany(store, changes);
+  changes.forEach((c, k) => {
+    if (oks[k]) rs.set(ruleKey(c.next.symbol, c.next.rule), { ...c.next, version: c.expected + 1 });
+  });
+  for (const [k, v] of await fireAlerts(store, out, fires, nowMs)) rs.set(k, v);
 
   // --- reminders (FR-4.2); re-read inside sendDueReminders (FR-4.5)
-  const room = Math.max(0, Math.floor((CALL_BUDGET - TAIL - m.calls) / 3));
   const due = [...rs.values()]
     .filter((r) => reminderDue(r, nowMs) && liveStocks.some((x) => x.symbol === r.symbol))
-    .sort((a, b) => (a.t0Ms ?? 0) - (b.t0Ms ?? 0))
-    .slice(0, room);
+    .sort((a, b) => (a.t0Ms ?? 0) - (b.t0Ms ?? 0));
   if (due.length) await sendDueReminders(store, out, due, mem, backInside, nowMs, settingsFor);
 
   // --- opening briefing (FR-7)
