@@ -16,6 +16,7 @@ import { applyAck, saveStock, setMute } from "./actions";
 import { pendingKey, volumeRuleText } from "./commands";
 import type { Ctx } from "./env";
 import { ApiError } from "./validate";
+import { ackTestCycle } from "./testcycle";
 
 export const PENDING_MOVE_KEY = "pending_move";
 const PENDING_TTL_MS = 10 * MIN;
@@ -41,8 +42,9 @@ export async function handleButton(ctx: Ctx, action: CallbackAction, msgId: numb
   switch (action.type) {
     case "ack": {
       if (action.symbol === "TEST") {
+        if (await ackTestCycle(ctx, msgId)) return "Test acknowledged";
         await stripKeyboard(ctx, msgId);
-        return "Test acknowledged";
+        return "That test is over";
       }
       const done = await applyAck(ctx, { symbol: action.symbol, rule: action.rule, cycle: action.cycle }, "telegram");
       if (!done) await stripKeyboard(ctx, msgId); // stale keyboard

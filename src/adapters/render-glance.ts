@@ -386,6 +386,18 @@ function testAlert(ctx: GlanceCtx): Rendered {
   };
 }
 
+// ------------------------------------------------------------ test cycle (FR-13.1)
+/** Reminder n of a running test: clearly TEST, notifying. */
+export function renderTestReminder(n: number, nowMs: number, dashboardUrl?: string): Rendered {
+  return {
+    text: body(["🧪 <b>TEST REMINDER " + n + "</b> · not real", ...pack([`Reminder ${n} – test`, `unacknowledged ${n} min`]), "Nothing is wrong. Tap Acknowledge.", both(nowMs)]),
+    buttons: [[{ text: "✅ Acknowledge", data: encodeAck("TEST", "HIGH", 0) }], ...(dashboardUrl ? [dash({ dashboardUrl })] : [])],
+  };
+}
+/** The edit that closes a test when it is acknowledged. */
+export const renderTestAck = (nowMs: number): Rendered => ({ text: body(["🧪 <b>TEST</b> acknowledged", `Acknowledged ${both(nowMs)}`, "Nothing real was affected."]) });
+export const renderTestEnded = (nowMs: number): Rendered => ({ text: body(["🧪 <b>TEST ENDED</b>", "Test ended – no acknowledgment", "No more test reminders.", both(nowMs)]) });
+
 // ------------------------------------------------------------ entry points
 /** All messages for one event (only the briefing can be more than one). */
 export function renderGlanceAll(ev: OutboundEvent, ctx: GlanceCtx): Rendered[] {

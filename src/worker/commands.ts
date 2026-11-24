@@ -20,6 +20,7 @@ import { APP_VERSION, type Ctx } from "./env";
 import type { Intent } from "./intents";
 import { ApiError } from "./validate";
 import { explainWhy, volumeRuleText } from "./why";
+import { ackTestCycle, startTestCycle } from "./testcycle";
 
 const PENDING_TTL_MS = 10 * MIN;
 
@@ -35,13 +36,14 @@ export async function runCommand(ctx: Ctx, intent: Intent): Promise<Rendered | n
       case "today": return await today(ctx);
       case "why": return await why(ctx, intent.symbol, intent.hour, intent.minute, intent.date);
       case "test":
-        await ctx.notifier.send({ type: "TEST_ALERT" });
+        await startTestCycle(ctx);
         return null;
       case "ackall": {
         const n = await applyAck(ctx, { all: true }, "ackall");
         return renderText(n ? `✅ Acknowledged ${n} alert${n === 1 ? "" : "s"}.` : "Nothing to acknowledge.");
       }
       case "ack": {
+        if (intent.symbol === "TEST") return (await ackTestCycle(ctx)) ? null : renderText("No test is running.");
         const n = await applyAck(ctx, { symbol: intent.symbol }, "command");
         return n ? renderOk(intent.symbol, "acknowledged", [`${n} rule${n === 1 ? "" : "s"} closed.`]) : renderText(`No active alert for ${intent.symbol}.`);
       }

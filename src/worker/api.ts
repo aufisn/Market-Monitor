@@ -8,6 +8,7 @@ import { CALENDAR_VALID_UNTIL, nextOpen, sessionFor } from "../core/calendar";
 import { avgCumAt } from "../core/rules";
 import { MIN } from "../core/time";
 import { explainWhy } from "./why";
+import { startTestCycle } from "./testcycle";
 import { setPausedAll, applyAck, removeStock, saveStock, setMute } from "./actions";
 import { authenticate } from "./auth";
 import { APP_VERSION, type Ctx } from "./env";
@@ -185,7 +186,7 @@ async function route(request: Request, ctx: Ctx, url: URL): Promise<Response> {
 
   if (path === "/api/test") {
     allow(m, "POST");
-    await ctx.notifier.send({ type: "TEST_ALERT" });
+    await startTestCycle(ctx);
     return json({ ok: true });
   }
 

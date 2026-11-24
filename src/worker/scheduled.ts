@@ -10,6 +10,7 @@ import * as core from "../core/engine";
 import { nyDate, realSleep } from "../adapters/util";
 import { buildCtx, missingSecrets, type Ctx, type Deps, type Env } from "./env";
 import { drainOutbound } from "./outbox";
+import { driveTestCycle } from "./testcycle";
 import { renderGlance } from "../adapters/render-glance";
 
 export const WORK_START_UTC_HOUR = 11; // 07:00 ET (EDT) / 06:00 ET (EST), the earliest pre-open work
@@ -65,6 +66,11 @@ export async function runScheduledJob(env: Env, deps: ScheduledDeps = {}): Promi
   const ports = { store: ctx.store, market: ctx.market };
 
   await dailyPurge(ctx, t0);
+  try {
+    await driveTestCycle(ctx, t0); // FR-13.1: before the engine, so tests also run when the market is closed
+  } catch {
+    /* a test must never block alerting */
+  }
 
   let polls = 0;
   let lastCost = 3;
