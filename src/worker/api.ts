@@ -122,7 +122,7 @@ async function route(request: Request, ctx: Ctx, url: URL): Promise<Response> {
     if (!Array.isArray(b.stocks) || b.stocks.length > MAX_STOCKS) throw new ApiError(400, "INVALID_INPUT", `stocks: list of at most ${MAX_STOCKS}`);
     const seen = new Set<string>();
     const stocks = b.stocks.map((s) => {
-      const v = validateStockInput(s);
+      const v = validateStockInput(s, undefined, { allowNoAlert: true }); // exports may hold stocks without alerts
       if (seen.has(v.symbol)) throw new ApiError(400, "INVALID_INPUT", `duplicate symbol ${v.symbol}`);
       seen.add(v.symbol);
       return v;

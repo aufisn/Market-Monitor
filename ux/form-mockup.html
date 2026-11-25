@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stock form mock-up</title>
+<style>
+:root{--bg:#f4f3ef;--card:#fff;--line:#d8d6cf;--line2:#bcbab2;--tx:#1f1e1c;--tx2:#6b6a65;--red:#b42318;--redbg:#fdecea;--grn:#2f7d32;--gry:#ecebe6;--shade:rgba(0,0,0,.45)}
+@media (prefers-color-scheme:dark){:root{--bg:#1b1b1a;--card:#262624;--line:#3a3a37;--line2:#55554f;--tx:#f1f0ec;--tx2:#a8a7a0;--red:#ff8a80;--redbg:#4a1d1a;--grn:#8bd48f;--gry:#33332f;--shade:rgba(0,0,0,.6)}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;padding:16px}
+h1{font-size:18px;font-weight:600;margin:0 0 4px}
+.sub{color:var(--tx2);font-size:13px;margin:0 0 14px}
+.mode{display:flex;gap:6px;margin-bottom:16px}
+.mode button{font:inherit;font-size:13px;padding:6px 14px;border-radius:999px;border:1px solid var(--line2);background:var(--card);color:var(--tx);cursor:pointer}
+.mode button.on{background:var(--tx);color:var(--card);border-color:transparent}
+.phone{max-width:380px;margin:0 auto;border-radius:22px;overflow:hidden;border:1px solid var(--line);position:relative;background:var(--shade);min-height:640px;display:flex;align-items:flex-end}
+.shadeHint{position:absolute;top:14px;left:0;right:0;text-align:center;color:#fff;font-size:12px;opacity:.85}
+.sheet{background:var(--card);width:100%;border-radius:18px 18px 0 0;padding:16px 16px 18px}
+.sheet h2{font-size:17px;margin:0 0 12px;display:flex;justify-content:space-between;align-items:center}
+.f{margin-bottom:12px}
+.f label,.lg{display:block;font-size:12px;color:var(--tx2);margin-bottom:4px}
+.row{display:flex;gap:8px}
+input[type=text],select,textarea{font:inherit;font-size:15px;padding:8px 10px;border:1px solid var(--line2);border-radius:8px;background:var(--card);color:var(--tx);width:100%}
+select{width:auto;flex-shrink:0;font-size:13px}
+input[readonly]{background:var(--gry)}
+textarea{resize:none;height:56px}
+.pv{font-size:12px;color:var(--tx2);margin-top:3px}
+.sec{border-top:1px solid var(--line);padding-top:12px;margin-top:4px}
+.acts{display:flex;gap:8px;margin-top:14px}
+.acts button{font:inherit;font-size:14px;padding:9px 14px;border-radius:8px;border:1px solid var(--line2);background:var(--card);color:var(--tx);cursor:pointer}
+.acts .pri{background:var(--tx);color:var(--card);border-color:transparent;flex:1}
+.sw{display:inline-flex;align-items:center;gap:7px;font:inherit;font-size:12px;color:var(--tx2);background:none;border:0;padding:0;cursor:pointer}
+.sw .t{width:38px;height:22px;border-radius:11px;background:var(--line2);position:relative}
+.sw .t::after{content:"";position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:#fff;transition:left .2s}
+.sw[aria-checked="true"] .t{background:var(--grn)}
+.sw[aria-checked="true"] .t::after{left:18px}
+.confirm{position:absolute;inset:0;background:var(--shade);display:none;align-items:center;justify-content:center;padding:24px}
+.confirm.show{display:flex}
+.box{background:var(--card);border-radius:14px;padding:18px;width:100%}
+.box p{margin:0 0 4px;font-weight:600}
+.box .k{font-size:13px;color:var(--tx2);margin-bottom:14px}
+.box .acts{margin-top:0}
+.box .danger{background:var(--red);color:#fff;border-color:transparent}
+.err{color:var(--red);font-size:13px;margin:6px 0 0}
+.toast{position:absolute;left:16px;right:16px;top:40px;background:var(--tx);color:var(--card);font-size:13px;border-radius:8px;padding:8px 12px;display:none}
+.notes{max-width:640px;margin:18px auto 0;color:var(--tx2);font-size:13px}
+.notes li{margin:3px 0}
+</style>
+</head>
+<body>
+<h1>One form to add or edit a stock (steps 2 and 3)</h1>
+<p class="sub">Mock-up. Try tapping the dark area, then change a field and press Cancel.</p>
+<div class="mode"><button id="mAdd" class="on">Add stock</button><button id="mEdit">Edit TSLA</button></div>
+<div class="phone" id="phone">
+  <div class="shadeHint">Tapping here does nothing</div>
+  <div class="toast" id="toast"></div>
+  <form class="sheet" id="form" novalidate></form>
+  <div class="confirm" id="confirm"><div class="box">
+    <p>Discard your changes?</p>
+    <div class="k">What you typed in this form will be lost.</div>
+    <div class="acts"><button type="button" class="pri" id="keep">Keep editing</button><button type="button" class="danger" id="discard">Discard</button></div>
+  </div></div>
+</div>
+<ul class="notes">
+  <li>The same form is used to add a stock and to edit it, with LOW, HIGH and Volume together.</li>
+  <li>Every alert is optional, but a stock needs at least one of LOW, HIGH or Volume.</li>
+  <li>Volume can be "x the usual at this time" or a number of shares. A shares number works at once. The "usual" average is built from past sessions before the next open, so a "x usual" alert starts working on the next trading day.</li>
+  <li>Cancel or the phone's back gesture: closes at once if nothing changed, otherwise asks "Discard your changes?".</li>
+  <li>Save closes the form only when it works. On an error the form stays open with your entries.</li>
+</ul>
+<script>
+const form=document.getElementById("form"),conf=document.getElementById("confirm"),toast=document.getElementById("toast");
+const EDIT={sym:"TSLA",on:true,lo:"242.00",loU:"dollar",hi:"265.00",hiU:"dollar",vol:"3",volU:"multiple",notes:"Earnings 28 Jan"};
+const ADD={sym:"",on:true,lo:"",loU:"dollar",hi:"",hiU:"dollar",vol:"",volU:"multiple",notes:""};
+let edit=false,start=null,on=true;
+const pvLow=(v,u)=>!v?"No LOW alert":edit?(u==="dollar"?"Alert when the price falls to $"+(+v).toFixed(2)+" ("+Math.abs((v/251.60-1)*100).toFixed(1)+"% below Prev Close $251.60)":"= $"+(251.60*(1+ +v/100)).toFixed(2)+" today"):(u==="dollar"?"Alert when the price falls to $"+(+v).toFixed(2):"Worked out from each day's Prev Close");
+const pvHigh=(v,u)=>!v?"No HIGH alert":edit?(u==="dollar"?"Alert when the price rises to $"+(+v).toFixed(2)+" ("+((v/251.60-1)*100).toFixed(1)+"% above Prev Close)":"= $"+(251.60*(1+ +v/100)).toFixed(2)+" today"):(u==="dollar"?"Alert when the price rises to $"+(+v).toFixed(2):"Worked out from each day's Prev Close");
+const pvVol=(v,u)=>!v?"No volume alert":u==="multiple"?"Alert when volume reaches "+v+"x the usual for this time of day"+(edit?" (now 18.2M, 2.4x)":""):"Alert when volume today reaches "+Number(v).toLocaleString("en-US")+" shares";
+function build(){const d=edit?EDIT:ADD;on=d.on;
+form.innerHTML=`<h2><span>${edit?"Edit "+d.sym:"Add a stock"}</span><button type="button" class="sw" id="sw" role="switch" aria-checked="${on}"><span>Alerts</span><span class="t"></span></button></h2>
+<div class="f"><label for="sym">Symbol</label><input type="text" id="sym" value="${d.sym}" ${edit?"readonly":""} placeholder="NVDA" autocapitalize="characters"></div>
+<div class="sec"><div class="f"><label for="lo">LOW alert (optional)</label><div class="row"><input type="text" id="lo" inputmode="decimal" value="${d.lo}" placeholder="230.00"><select id="loU"><option value="dollar">$ price</option><option value="percent">% from Prev Close</option></select></div><div class="pv" id="pLo"></div></div>
+<div class="f"><label for="hi">HIGH alert (optional)</label><div class="row"><input type="text" id="hi" inputmode="decimal" value="${d.hi}" placeholder="260.00"><select id="hiU"><option value="dollar">$ price</option><option value="percent">% from Prev Close</option></select></div><div class="pv" id="pHi"></div></div>
+<div class="f"><label for="vol">Volume alert (optional)</label><div class="row"><input type="text" id="vol" inputmode="decimal" value="${d.vol}" placeholder="2.5"><select id="volU"><option value="multiple">x usual at this time</option><option value="absolute">shares</option></select></div><div class="pv" id="pVol"></div></div></div>
+<div class="f sec"><label for="notes">Note (optional)</label><textarea id="notes">${d.notes}</textarea></div>
+<p class="err" id="err"></p>
+<div class="acts"><button type="submit" class="pri">${edit?"Save":"Add stock"}</button><button type="button" id="cancel">Cancel</button></div>`;
+form.loU.value=d.loU;form.hiU.value=d.hiU;form.volU.value=d.volU;
+document.getElementById("sw").onclick=e=>{on=!on;e.currentTarget.setAttribute("aria-checked",on);};
+document.getElementById("cancel").onclick=tryClose;
+form.oninput=form.onchange=upd;upd();start=snap();}
+const snap=()=>JSON.stringify([...form.querySelectorAll("input,select,textarea")].map(e=>e.value).concat(on));
+function upd(){document.getElementById("pLo").textContent=pvLow(form.lo.value,form.loU.value);document.getElementById("pHi").textContent=pvHigh(form.hi.value,form.hiU.value);document.getElementById("pVol").textContent=pvVol(form.vol.value,form.volU.value);document.getElementById("err").textContent="";}
+function msg(t){toast.textContent=t;toast.style.display="block";setTimeout(()=>toast.style.display="none",1800);}
+function tryClose(){if(snap()===start){msg("Form closed (nothing had changed).");build();}else conf.classList.add("show");}
+document.getElementById("keep").onclick=()=>conf.classList.remove("show");
+document.getElementById("discard").onclick=()=>{conf.classList.remove("show");msg("Changes discarded.");build();};
+form.onsubmit=e=>{e.preventDefault();const err=document.getElementById("err");
+if(!edit&&!/^[A-Za-z0-9]{1,5}([.-][A-Za-z0-9])?$/.test(form.sym.value.trim())){err.textContent="Symbol: 1 to 5 letters or digits, for example NVDA or BRK.B.";return;}
+if(!form.lo.value&&!form.hi.value&&!form.vol.value){err.textContent="Set at least one alert: LOW, HIGH or Volume.";return;}
+for(const k of["lo","hi","vol"])if(form[k].value&&!(+form[k].value>0||(form[k+"U"].value==="percent"&&isFinite(+form[k].value)))){err.textContent="Check the "+({lo:"LOW",hi:"HIGH",vol:"Volume"})[k]+" value: type a number.";return;}
+msg(edit?"TSLA saved.":form.sym.value.trim().toUpperCase()+" added.");build();};
+const setMode=w=>{edit=w;document.getElementById("mEdit").classList.toggle("on",w);document.getElementById("mAdd").classList.toggle("on",!w);conf.classList.remove("show");build();};
+document.getElementById("mAdd").onclick=()=>setMode(false);document.getElementById("mEdit").onclick=()=>setMode(true);
+build();
+</script>
+</body>
+</html>

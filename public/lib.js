@@ -155,7 +155,7 @@ export function thresholdText(t, prev) {
 }
 export function volumeText(v) {
   if (!v) return "not set";
-  return v.mode === "multiple" ? v.value + "x average" : compact(v.value) + " shares";
+  return v.mode === "multiple" ? v.value + "x usual" : compact(v.value) + " shares";
 }
 
 /* ---------------------------------------------------------------- per-stock view model */
@@ -221,7 +221,7 @@ export function buildVM(stock, market, rules, settings, nowMs, marketOpen, flags
   return {
     sym: stock.symbol, stock, status, near, muted, paused, pausedAll: !!flags.pausedAll, notes: stock.notes || "",
     last, lastT, ageS, fresh: fr, prev, open: market?.open, dayHigh: market?.dayHigh, dayLow: market?.dayLow, cumVolume: market?.cumVolume,
-    high: hi, low: lo, hiP, loP, vol: stock.volume, volAvgMultiple: market?.baseline?.multiple,
+    high: hi, low: lo, hiP, loP, vol: stock.volume, volAvgMultiple: market?.baseline?.multiple, baseline: market?.baseline,
     changeAbs: Number.isFinite(last) && Number.isFinite(prev) ? last - prev : NaN,
     changePct: Number.isFinite(last) && Number.isFinite(prev) && prev !== 0 ? ((last - prev) / prev) * 100 : NaN,
     nearest, active, acked, atClose,
@@ -304,4 +304,125 @@ export function evalVolume({ mode, text, cum }) {
   if (!Number.isInteger(n) || n <= 0 || n > 1e12) return { state: "error", err: "Shares must be a whole number above 0." };
   const sofar = Number.isFinite(cum) ? " \u00b7 now " + compact(cum) + " (" + ((cum / n) * 100).toFixed(0) + "% of the way)" : "";
   return { state: "ok", mode, value: n, preview: "= alert at " + n.toLocaleString("en-US") + " IEX shares" + sofar };
+}
+
+/* ---------------------------------------------------------------- card stack (watchlist) */
+export const DRAG_SLOP = 8; // px before the direction of a drag is decided
+export const DRAG_STEP = 50; // px of sideways drag that changes the card
+
+/** Keeps the symbol order frozen while the page is in use: stays as before, new symbols go last, removed ones drop out.
+    `sortedSyms` is the urgency order, used only the first time (prev empty). */
+export function stackOrder(prev, sortedSyms) {
+  if (!prev || prev.length === 0) return sortedSyms.slice();
+  const have = new Set(sortedSyms);
+  const kept = prev.filter((s) => have.has(s));
+  const seen = new Set(kept);
+  return kept.concat(sortedSyms.filter((s) => !seen.has(s)));
+}
+/** Which symbol is in focus after the order changed. If the focused one was removed, the next neighbour (else the previous). */
+export function focusAfter(prevOrder, newOrder, focus) {
+  if (newOrder.length === 0) return "";
+  if (newOrder.includes(focus)) return focus;
+  const i = prevOrder.indexOf(focus);
+  if (i < 0) return newOrder[0];
+  for (let k = i + 1; k < prevOrder.length; k++) if (newOrder.includes(prevOrder[k])) return prevOrder[k];
+  for (let k = i - 1; k >= 0; k--) if (newOrder.includes(prevOrder[k])) return prevOrder[k];
+  return newOrder[0];
+}
+/** "h" for a mostly sideways drag, "v" for a mostly vertical one, null while still under the slop. */
+export function dragAxis(dx, dy, slop = DRAG_SLOP) {
+  if (Math.abs(dx) <= slop && Math.abs(dy) <= slop) return null;
+  return Math.abs(dx) > Math.abs(dy) ? "h" : "v";
+}
+/** Pixels the front card follows the finger: free in the middle, a quarter of the drag past either end (no wrap-around). */
+export function dragOffset(dx, i, n) {
+  return (i <= 0 && dx > 0) || (i >= n - 1 && dx < 0) ? dx / 4 : dx;
+}
+/** Card index after the finger lifts. Drag left = next card. */
+export function dragSettle(dx, i, n, step = DRAG_STEP) {
+  if (dx <= -step) return Math.min(n - 1, i + 1);
+  if (dx >= step) return Math.max(0, i - 1);
+  return i;
+}
+/** Symbols that are CROSSED now but were not in `prevCrossed` (a Set, or null on the first look: nothing is new then). */
+export function newlyCrossed(prevCrossed, vms) {
+  if (!prevCrossed) return [];
+  return vms.filter((v) => v.status === "CROSSED" && !prevCrossed.has(v.sym)).map((v) => v.sym);
+}
+/** True when there is at least one stock and every one has its alerts off. */
+export const allAlertsOff = (vms) => vms.length > 0 && vms.every((v) => v.paused);
+
+/* ---------------------------------------------------------------- one form to add and edit a stock */
+const WHICH = { low: "LOW", high: "HIGH" };
+/** Like evalThreshold, but a percent value is accepted when Prev Close is not known yet (a new stock): only its range is checked. */
+export function evalThresholdLoose(o) {
+  if (o.mode === "percent" && !(o.prev > 0)) {
+    if (!o.text.trim()) return { state: "empty" };
+    const n = parseNum(o.text);
+    if (!Number.isFinite(n)) return { state: "error", err: "Type a number, for example -5." };
+    if (n <= -100 || n > 1000) return { state: "error", err: "Percent must be above -100 and at most 1000." };
+    return { state: "ok", mode: "percent", value: Number(n.toFixed(4)), price: undefined, crossed: false };
+  }
+  return evalThreshold(o);
+}
+/** A plain sentence for what a LOW or HIGH value will do. `r` is an "ok" result from evalThresholdLoose. */
+export function thresholdSentence(which, r, prev) {
+  const up = which === "high";
+  if (r.price === undefined) return "Alert when the price " + (up ? "rises to " : "falls to ") + signed(r.value, 2) + "% from Prev Close (worked out each day)";
+  const base = "Alert when the price " + (up ? "rises to $" : "falls to $") + money(r.price);
+  if (!(prev > 0)) return base;
+  const pct = ((r.price - prev) / prev) * 100;
+  return base + " (" + Math.abs(pct).toFixed(1) + "% " + (pct >= 0 ? "above" : "below") + " Prev Close $" + money(prev) + ")" + (r.crossed ? ". The latest price is already beyond this, so saving alerts at once" : "");
+}
+export function volumeSentence(r, cum) {
+  if (r.mode === "multiple") return "Alert when volume reaches " + r.value + "x the usual for this time of day";
+  return "Alert when volume today reaches " + r.value.toLocaleString("en-US") + " shares" + (Number.isFinite(cum) ? " (now " + compact(cum) + ")" : "");
+}
+export const USUAL_VOLUME_NOTE = "The usual-volume average is built before the next open, so this alert starts on the next trading day.";
+/** True when a "x usual" alert will not work today: the stock is new or its baseline is not OK. */
+export const usualVolumeWaits = (editing, baseline) => !editing || baseline?.status !== "OK";
+
+const SYMBOL_RE = /^[A-Z0-9]{1,5}([.-][A-Z0-9])?$/;
+const sameTh = (a, b) => (!a && !b) || (!!a && !!b && a.mode === b.mode && a.value === b.value);
+/** Checks the whole stock form and builds the request body.
+    f = { editing, existing, symbol, on, low:{mode,text}, high:{mode,text}, vol:{mode,text}, notes, prev, last, cum }
+    Returns { low, high, vol, err, field, body, changed } where low/high/vol are the per-field evaluations (for the preview lines). */
+export function checkStockForm(f) {
+  const prev = f.prev, last = f.last;
+  const lowRaw = evalThresholdLoose({ which: "low", mode: f.low.mode, text: f.low.text, prev, last });
+  const highRaw = evalThresholdLoose({ which: "high", mode: f.high.mode, text: f.high.text, prev, last });
+  const low = lowRaw.state === "ok" && highRaw.state === "ok" && highRaw.price !== undefined ? evalThresholdLoose({ which: "low", mode: f.low.mode, text: f.low.text, prev, last, otherPrice: highRaw.price }) : lowRaw;
+  const high = lowRaw.state === "ok" && highRaw.state === "ok" && lowRaw.price !== undefined ? evalThresholdLoose({ which: "high", mode: f.high.mode, text: f.high.text, prev, last, otherPrice: lowRaw.price }) : highRaw;
+  const vol = evalVolume({ mode: f.vol.mode, text: f.vol.text, cum: NaN });
+  const out = { low, high, vol, err: "", field: "", body: null, changed: false };
+  const fail = (field, err) => { if (!out.err) { out.err = err; out.field = field; } };
+  const symbol = (f.symbol || "").trim().toUpperCase();
+  if (!f.editing && !SYMBOL_RE.test(symbol)) fail("symbol", "Symbol: 1 to 5 letters or digits, for example NVDA or BRK.B.");
+  for (const [k, r] of [["low", low], ["high", high], ["vol", vol]]) if (r.state === "error") fail(k, (k === "vol" ? "Volume" : WHICH[k]) + ": " + r.err);
+  // both are percent or both are dollars: compare the numbers even when Prev Close is unknown
+  if (low.state === "ok" && high.state === "ok" && low.mode === high.mode && low.value >= high.value) fail("low", "LOW must be below HIGH.");
+  if (low.state !== "ok" && high.state !== "ok" && vol.state !== "ok") fail("low", "Set at least one alert: LOW, HIGH or Volume.");
+  if (out.err) return out;
+  const th = (r) => (r.state === "ok" ? { mode: r.mode, value: r.value } : null);
+  const notes = (f.notes || "").trim();
+  if (!f.editing) {
+    const body = { symbol };
+    if (low.state === "ok") body.low = th(low);
+    if (high.state === "ok") body.high = th(high);
+    if (vol.state === "ok") body.volume = th(vol);
+    if (notes) body.notes = notes;
+    if (!f.on) body.paused = true;
+    out.body = body; out.changed = true;
+    return out;
+  }
+  const ex = f.existing || {};
+  const body = {};
+  for (const [key, r] of [["low", low], ["high", high], ["volume", vol]]) {
+    const nv = th(r);
+    if (!sameTh(nv, ex[key])) body[key] = nv; // null removes the alert
+  }
+  if (notes !== (ex.notes || "")) body.notes = notes || null;
+  if (f.on === !!ex.paused) body.paused = !f.on;
+  out.body = body; out.changed = Object.keys(body).length > 0;
+  return out;
 }

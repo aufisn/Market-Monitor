@@ -150,8 +150,18 @@ export class AlpacaMarketData implements MarketData {
     return { symbol, date: rb.t.slice(0, 10), close: b.c, high: b.h, low: b.l, volume: b.v };
   }
 
+  /**
+   * Official daily bars (consolidated SIP feed) for many symbols in one request (paginated).
+   * [UNVERIFIED-PHASE0] Free plan: SIP is served only when `end` is at least 15 minutes old
+   * (otherwise HTTP 403, mapped to AUTH). [UNVERIFIED-PHASE0] The bar of the current day is
+   * returned while the day is closed and covers the whole day up to `end`.
+   */
+  async officialDailyBars(symbols: Symbol[], startMs: number, endMs: number): Promise<Record<Symbol, Bar[]>> {
+    return this.barsMulti(symbols, "1Day", startMs, endMs, "sip");
+  }
+
   // ---------------------------------------------------------------- bars with pagination
-  private async barsMulti(symbols: Symbol[], tf: string, startMs: number, endMs: number): Promise<Record<Symbol, Bar[]>> {
+  private async barsMulti(symbols: Symbol[], tf: string, startMs: number, endMs: number, feed: "iex" | "sip" = this.feed): Promise<Record<Symbol, Bar[]>> {
     const out: Record<Symbol, Bar[]> = {};
     if (symbols.length === 0 || endMs <= startMs) return out;
     let token: string | undefined;
@@ -163,7 +173,7 @@ export class AlpacaMarketData implements MarketData {
         start: new Date(startMs).toISOString(),
         end: new Date(endMs).toISOString(),
         limit: "10000",
-        feed: this.feed,
+        feed,
         adjustment: "raw",
         sort: "asc",
         ...(token ? { page_token: token } : {}),

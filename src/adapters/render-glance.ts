@@ -9,7 +9,7 @@
  * Every dynamic value goes through escapeHtml; every line is at most 38 wide (emoji = 2).
  */
 import { sessionFor } from "../core/calendar";
-import type { Baseline, MarketState, OutboundEvent, RuleKind, RuleState, StockConfig } from "../core/ports";
+import type { Baseline, EodAlert, EodStock, MarketState, OutboundEvent, RuleKind, RuleState, StockConfig } from "../core/ports";
 import { avgCumAt, resolveThreshold } from "../core/rules";
 import { MIN, nyLocalToUtc } from "../core/time";
 import {
@@ -345,22 +345,88 @@ function ready(ev: Extract<OutboundEvent, { type: "READY" }>): Rendered {
   return { text: body(L), silent: true };
 }
 
-function sessionEnded(ev: Extract<OutboundEvent, { type: "SESSION_ENDED" }>): Rendered {
+// ------------------------------------------------------------ session ended + end-of-day summary (ux/eod-mockup.html)
+const na = (n: number | undefined): string => (typeof n === "number" && Number.isFinite(n) ? f2(n) : "n/a");
+
+function eodBlock(s: EodStock): string {
+  const arrow =
+    s.close !== undefined && s.prevClose !== undefined && s.prevClose > 0
+      ? (() => {
+          const pct = ((s.close - s.prevClose) / s.prevClose) * 100;
+          return `${pct >= 0 ? "▲" : "▼"}${Math.abs(pct).toFixed(1)}%`;
+        })()
+      : "";
+  const tags = [...(s.alertsOff ? ["(alerts off)"] : []), ...(s.source === "IEX" ? ["(IEX)"] : [])];
+  const L = pack([`<b>${e(s.symbol)}</b> Close ${na(s.close)}${arrow ? " " + arrow : ""}`, ...tags], "  ");
+  L.push(...pack([`Prev Close ${na(s.prevClose)}`, `Open ${na(s.open)}`]));
+  L.push(...pack([`Low ${na(s.low)}`, `High ${na(s.high)}`]));
+  const x = s.volume !== undefined && s.avgVolume && s.avgVolume > 0 ? `${mult1(s.volume / s.avgVolume)} usual` : "";
+  L.push(...pack([`Volume ${s.volume !== undefined ? vol(s.volume) : "n/a"}`, x]));
+  for (const a of s.alerts) L.push(alertLine(a));
+  return L.join("\n");
+}
+
+/** `🔔 LOW 10:42 ET · acknowledged`; shortened step by step so it always fits 38. */
+function alertLine(a: EodAlert): string {
+  const label = a.rule === "VOLUME" ? (a.multiple !== undefined ? `Volume ${mult1(a.multiple)}` : "Volume") : a.rule;
+  const nth = a.count > 1 ? ` #${a.count}` : "";
+  const time = etOnly(a.tMs);
+  const tries = [
+    `🔔 ${label}${nth} ${time} · ${a.acked ? "acknowledged" : "not acked"}`,
+    `🔔 ${label}${nth} ${time} · ${a.acked ? "ack'd" : "not acked"}`,
+    `🔔 ${label}${nth} ${time} · ${a.acked ? "ack'd" : "unacked"}`,
+    `🔔 ${label}${nth} ${time}`,
+  ];
+  // The mock-up uses the short word on Volume lines (the label is longer), the long word on price lines.
+  return tries.slice(a.rule === "VOLUME" ? 1 : 0).find((t) => glanceWidth(t) <= 38) ?? (tries[3] as string);
+}
+
+function sessionEnded(ev: Extract<OutboundEvent, { type: "SESSION_ENDED" }>): Rendered[] {
   const c = ev.counts;
   const alerts = (c.alerts ?? 0) + (c.lateAlerts ?? 0);
   const s = sessionFor(ev.date);
-  const L = [`🏁 <b>SESSION ENDED</b> · ${shortDate(ev.date)}`];
-  if (s.kind === "open") L.push(`Closed ${both(s.close)}`);
-  L.push(...pack([`Alerts ${alerts}${c.lateAlerts ? ` (${c.lateAlerts} late)` : ""}`, `reminders ${c.reminders ?? 0}`]));
-  L.push(...pack([`Acknowledged ${c.acks ?? 0}`, `open at close ${c.unacked ?? 0}`]));
-  return { text: body(L), silent: true };
+  const head = (n: number, total: number): string[] => {
+    if (n > 1) return [`🏁 <b>SESSION ENDED</b> (${n}/${total})`];
+    const L = [`🏁 <b>SESSION ENDED</b> · ${shortDate(ev.date)}${total > 1 ? ` (1/${total})` : ""}`];
+    if (s.kind === "open") L.push(`Closed ${both(s.close)}`);
+    L.push(...pack([`Alerts ${alerts}${c.lateAlerts ? ` (${c.lateAlerts} late)` : ""}`, `reminders ${c.reminders ?? 0}`]));
+    L.push(...pack([`Acknowledged ${c.acks ?? 0}`, `open at close ${c.unacked ?? 0}`]));
+    return L;
+  };
+  const stocks = ev.eod?.stocks ?? [];
+  if (!stocks.length) return [{ text: body(head(1, 1)), silent: true }];
+
+  const kind = ev.eod?.footer ?? (stocks.every((x) => x.source === "IEX") ? "IEX" : stocks.some((x) => x.source === "IEX") ? "MIXED" : "SIP");
+  const allIex = kind === "IEX";
+  const anyIex = kind !== "SIP";
+  const foot = allIex ? ["IEX prices (SIP unavailable)"] : anyIex ? ["Official prices (all US exchanges)", "(IEX) = official data unavailable"] : ["Official prices (all US exchanges)"];
+  const blocks = stocks.map(eodBlock);
+  const footText = foot.join("\n");
+  // Greedy split under the Telegram limit; a stock block stays whole.
+  const parts: string[][] = [[]];
+  let size = 0;
+  const reserve = head(1, 9).join("\n").length + footText.length + 20;
+  for (const b of blocks) {
+    if (size + b.length + 2 > TG_LIMIT - reserve && (parts[parts.length - 1] as string[]).length > 0) {
+      parts.push([]);
+      size = 0;
+    }
+    (parts[parts.length - 1] as string[]).push(b);
+    size += b.length + 2;
+  }
+  const given = ev.eod?.part; // already cut by the engine: numbering and footer follow it
+  return parts.map((blks, i) => ({
+    text: [head(given ? given.n : i + 1, given ? given.total : parts.length).join("\n"), ...blks, ...(i === parts.length - 1 && (!given || given.n === given.total) ? [footText] : [])].join("\n\n"),
+    silent: true,
+  }));
 }
 
 const GAP_NOTE = ["Alerts may be late, not lost.", "Gap scan runs when data returns."];
-const OPS: Record<string, { title: string; sub: string; extra?: string[] }> = {
+const OPS: Record<string, { title: string; sub: string; extra?: string[]; once?: boolean }> = {
   DATA_ERROR: { title: "DATA PROBLEM", sub: "provider error", extra: GAP_NOTE },
   GAP_SCAN_ERROR: { title: "DATA PROBLEM", sub: "gap scan", extra: GAP_NOTE },
   BASELINE_ERROR: { title: "BASELINE PROBLEM", sub: "volume data" },
+  EOD_SIP_UNAVAILABLE: { title: "OFFICIAL PRICES", sub: "unavailable", once: true },
   CALENDAR_EXPIRED: { title: "CALENDAR EXPIRED", sub: "no alerts" },
   CALENDAR_EXPIRING: { title: "CALENDAR EXPIRING", sub: "update soon" },
   MISSING_SECRETS: { title: "SETUP PROBLEM", sub: "alerting stopped" },
@@ -375,7 +441,8 @@ function opsNotice(ev: Extract<OutboundEvent, { type: "OPS_NOTICE" }>, ctx: Glan
   const L = glanceWidth(head) <= 38 ? [head] : [`⚠️ <b>${e(title)}</b>`, e(sub)];
   L.push(...wrapPlain(ev.detail));
   if (known?.extra) L.push(...known.extra);
-  L.push(`Since ${both(ctx.nowMs)}`, "Next notice of this type: 30 min");
+  L.push(`Since ${both(ctx.nowMs)}`);
+  if (!known?.once) L.push("Next notice of this type: 30 min");
   return { text: body(L), buttons: ctx.dashboardUrl ? [dash(ctx)] : undefined };
 }
 
@@ -409,7 +476,7 @@ export function renderGlanceAll(ev: OutboundEvent, ctx: GlanceCtx): Rendered[] {
     case "BRIEFING": return briefing(ev, ctx, false);
     case "UNACK_AT_CLOSE": return [unackAtClose(ev, ctx)];
     case "READY": return [ready(ev)];
-    case "SESSION_ENDED": return [sessionEnded(ev)];
+    case "SESSION_ENDED": return sessionEnded(ev);
     case "OPS_NOTICE": return [opsNotice(ev, ctx)];
     case "TEST_ALERT": return [testAlert(ctx)];
   }

@@ -107,6 +107,29 @@ describe("dashboard API behaviour", () => {
     expect((await post({ symbol: "MSFT", bogus: 1 })).status).toBe(400);
     expect((await post({ symbol: "<script>" })).status).toBe(400);
   });
+  it("create accepts volume, notes and paused with the same checks as update (add/edit form)", async () => {
+    const r = await post({ symbol: "NVDA", high: { mode: "dollar", value: 200 }, low: { mode: "dollar", value: 100 }, volume: { mode: "multiple", value: 2 }, notes: "earnings week", paused: true });
+    expect(r.status).toBe(201);
+    expect(((await r.json()) as { stock: unknown }).stock).toMatchObject({ symbol: "NVDA", volume: { mode: "multiple", value: 2 }, notes: "earnings week", paused: true });
+    expect((await post({ symbol: "MSFT", volume: { mode: "multiple", value: 0 } })).status).toBe(400);
+    expect((await post({ symbol: "MSFT", volume: { mode: "absolute", value: 1.5 } })).status).toBe(400);
+    expect((await post({ symbol: "MSFT", notes: "x".repeat(201) })).status).toBe(400);
+    expect((await post({ symbol: "MSFT", paused: "yes" })).status).toBe(400);
+    expect((await post({ symbol: "MSFT", volume: { mode: "absolute", value: 500000 }, notes: "ok" })).status).toBe(201); // volume only, no price rule: same as update
+  });
+  it("needs at least one alert: create and update reject a stock left with none (422), import allows older stocks", async () => {
+    const r = await post({ symbol: "MSFT", notes: "x" });
+    expect(r.status).toBe(422);
+    expect(((await r.json()) as { message?: string; error: string }).error).toBe("NO_ALERT");
+    expect(JSON.stringify(await (await post({ symbol: "MSFT" })).json())).toContain("Set at least one alert: LOW, HIGH or Volume.");
+    expect((await post({ symbol: "MSFT", volume: { mode: "multiple", value: 2 } })).status).toBe(201);
+    const put = (b: unknown) => api("/api/stocks/MSFT", { method: "PUT", body: JSON.stringify(b) });
+    expect((await put({ volume: null })).status).toBe(422); // would leave none
+    expect((await put({ notes: "fine", paused: true })).status).toBe(200);
+    expect((await put({ volume: null, low: { mode: "dollar", value: 5 } })).status).toBe(200); // swapping is fine
+    const exp = { format: "market-monitor-config", version: 1, settings: {}, stocks: [{ symbol: "OLD", enabled: true }] };
+    expect((await api("/api/import", { method: "POST", body: JSON.stringify(exp) })).status).toBe(200);
+  });
   it("asks to confirm when the latest price already crosses (FR-2.4)", async () => {
     await d.prepare("INSERT INTO market_state VALUES ('2026-11-25','AAPL',?,0)").bind(JSON.stringify({ symbol: "AAPL", date: "2026-11-25", last: { t: 1, p: 100, s: 1 } })).run();
     const r = await post({ symbol: "AAPL", high: { mode: "dollar", value: 90 } });

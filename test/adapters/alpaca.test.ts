@@ -93,3 +93,34 @@ describe("alpaca errors (FR-3.9)", () => {
     expect(err.kind).toBe("TIMEOUT");
   });
 });
+
+describe("alpaca official daily bars (end-of-day summary)", () => {
+  it("one multi-symbol 1Day request on the SIP feed, raw adjustment, follows pages", async () => {
+    const day = (t: string, c: number, v: number) => ({ t, o: c, h: c + 1, l: c - 1, c, v });
+    const pages = [
+      jsonRes({ bars: { A: [day("2026-11-23T05:00:00Z", 10, 100), day("2026-11-24T05:00:00Z", 11, 200)] }, next_page_token: "p2" }),
+      jsonRes({ bars: { B: [day("2026-11-24T05:00:00Z", 20, 300)] }, next_page_token: null }),
+    ];
+    const f = fakeFetch({ "/v2/stocks/bars": () => pages.shift()! });
+    const start = Date.parse("2026-10-01T00:00:00Z");
+    const end = Date.parse("2026-11-24T21:05:00Z");
+    const r = await mk(f).officialDailyBars(["A", "B"], start, end);
+    expect(r.A!.map((b) => b.c)).toEqual([10, 11]);
+    expect(r.B![0]).toMatchObject({ c: 20, v: 300 });
+    const u = new URL(f.calls[0]!.url);
+    expect(u.searchParams.get("feed")).toBe("sip");
+    expect(u.searchParams.get("timeframe")).toBe("1Day");
+    expect(u.searchParams.get("adjustment")).toBe("raw");
+    expect(u.searchParams.get("symbols")).toBe("A,B");
+    expect(u.searchParams.get("end")).toBe(new Date(end).toISOString());
+    expect(f.calls[1]!.url).toContain("page_token=p2");
+    expect(f.calls).toHaveLength(2);
+  });
+  it("a refused SIP request (403) is an AUTH-kind error with no key in the message", async () => {
+    const f = fakeFetch({ "/v2/stocks/bars": () => jsonRes({ message: "subscription does not permit querying recent SIP data" }, 403) });
+    const err = await mk(f).officialDailyBars(["A"], 0, Date.now()).catch((e) => e);
+    expect(err).toBeInstanceOf(AlpacaError);
+    expect((err as AlpacaError).kind).toBe("AUTH");
+    expect(String(err.message)).not.toMatch(/SEC|KID/);
+  });
+});

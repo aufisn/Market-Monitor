@@ -3,15 +3,16 @@
  * One runTick = one poll. Nothing is held in memory between runs (FR-4.9).
  * Every port call is counted; optional work stops before 45 calls (PRD 1c).
  */
-import { applyObservation, bump, closeActiveRules, emit, fireAlerts, flush, freshState, newOut, putMany, reminderDue, ruleKey, sendDueReminders } from "./alerts";
+import { applyObservation, bump, closeActiveRules, emit, emitMany, fireAlerts, flush, freshState, newOut, putMany, reminderDue, ruleKey, sendDueReminders } from "./alerts";
 import type { FireItem } from "./alerts";
 import { baselineProgress, baselineWindow, buildBaseline, pickNextBaseline } from "./baseline";
 import { calendarStatus, sessionFor } from "./calendar";
 import type { Session } from "./calendar";
+import { EOD_AFTER_CLOSE_MS, EOD_FINAL_AFTER_CLOSE_MS, EOD_PARTIAL_AFTER_CLOSE_MS, buildEodStocks, chunkEod, eodWindow, hasOfficialToday } from "./eod";
 import { gapWindow, scanGap } from "./gapscan";
 import type { GapRule } from "./gapscan";
 import { EVENT_PRIORITY } from "./ports";
-import type { Baseline, MarketData, MarketState, OutboundEvent, RuleState, Settings, Snapshot, StockConfig, Store, TradingDate } from "./ports";
+import type { Bar, Baseline, EodSummary, MarketData, MarketState, OutboundEvent, RuleState, Settings, Snapshot, StockConfig, Store, TradingDate } from "./ports";
 import { evaluatePrice, evaluateVolume, isFlaggedTrade, priceInsideBuffer, resolveThreshold, volumeInsideBuffer } from "./rules";
 import { MIN, nyDate, nyParts } from "./time";
 
@@ -41,8 +42,7 @@ const BRIEFING_DELAY_MS = 60_000;
 const BRIEFING_WAIT_MS = 10 * MIN;
 const READY_BEFORE_OPEN_MS = 30 * MIN; // 09:00 ET
 const PRE_OPEN_WINDOW_MS = 150 * MIN; // 07:00 ET
-const ENDED_AFTER_CLOSE_MS = 5 * MIN;
-const POST_CLOSE_WINDOW_MS = 30 * MIN;
+const POST_CLOSE_WINDOW_MS = 60 * MIN; // closing() works until here; the end-of-day summary is built inside it
 const PREV_CLOSE_PER_RUN = 12;
 
 // ------------------------------------------------------------ call metering
@@ -133,7 +133,7 @@ export async function runTick(ports: Ports, nowMs: number, opts: TickOptions = {
 
   if (session.kind === "expired") return handleExpired(store, m, nowMs);
   if (session.kind === "closed" || nowMs < session.open) return summary("idle", m); // FR-1.1, exits at once
-  if (nowMs >= session.close) return closing(store, m, session, nowMs, opts);
+  if (nowMs >= session.close) return closing(store, market, m, session, nowMs, opts);
 
   const holder = opts.holder ?? `run-${nowMs}-${Math.random().toString(36).slice(2, 8)}`;
   if (!opts.skipLease && !(await store.acquireLease(LEASE, holder, nowMs, LEASE_TTL_MS))) return summary("skipped", m);
@@ -327,32 +327,91 @@ async function maybeBriefing(
 }
 
 // ------------------------------------------------------------ after the close
-async function closing(store: Store, m: Meter, session: Extract<Session, { kind: "open" }>, nowMs: number, opts: TickOptions): Promise<TickSummary> {
+async function closing(store: Store, market: MarketData, m: Meter, session: Extract<Session, { kind: "open" }>, nowMs: number, opts: TickOptions): Promise<TickSummary> {
   if (nowMs >= session.close + POST_CLOSE_WINDOW_MS) return summary("idle", m);
   const date = session.date;
+  // Everything done: one cheap read, no lease, no writes for the rest of the window.
+  if ((await store.getCounters(date)).ended) return summary("closing", m);
   const holder = opts.holder ?? `close-${nowMs}`;
   if (!opts.skipLease && !(await store.acquireLease(LEASE, holder, nowMs, LEASE_TTL_MS))) return summary("skipped", m);
   try {
-    const c = await store.getCounters(date);
+    const c = await store.getCounters(date); // read again under the lease
     const out = newOut();
     if (!c.closed) {
+      // Marker FIRST: if a later step fails the notice is lost, never sent twice.
+      await store.bumpCounters(date, { closed: 1 });
       const closed = await closeActiveRules(store, await store.getRuleStates(date)); // FR-4.8 / I-6
       if (closed.length) await emit(store, out, { type: "UNACK_AT_CLOSE", date, rules: closed }, nowMs);
-      bump(out, "closed");
       bump(out, "unacked", closed.length);
       c.unacked = (c.unacked ?? 0) + closed.length;
     }
-    if (!c.ended && nowMs >= session.close + ENDED_AFTER_CLOSE_MS) {
+    if (!c.ended && nowMs >= session.close + EOD_AFTER_CLOSE_MS) {
       const counts: Record<string, number> = {};
       for (const k of ["alerts", "lateAlerts", "reminders", "acks", "unacked"]) counts[k] = c[k] ?? 0;
-      await emit(store, out, { type: "SESSION_ENDED", date, counts }, nowMs);
-      bump(out, "ended");
+      // One end-of-day message (the old SESSION_ENDED, now with the per-stock summary), cut into parts only
+      // when the list is long. Built after the close, when nothing is polled; failures never touch alerting.
+      const eod = await buildEod(store, market, m, session, nowMs);
+      if (eod !== "wait") {
+        // Marker BEFORE the enqueue (losing a summary is better than sending two).
+        await store.bumpCounters(date, { ended: 1 });
+        const parts = eod ? chunkEod(eod.stocks) : [undefined];
+        const events: OutboundEvent[] = parts.map((eodPart) => ({ type: "SESSION_ENDED", date, counts, ...(eodPart ? { eod: eodPart } : {}) }));
+        await emitMany(store, out, events, nowMs); // one batched call; each part is its own queue item
+      }
     }
     m.events += out.events;
     await flush(store, out, date);
     return summary("closing", m);
   } finally {
     if (!opts.skipLease) await store.releaseLease(LEASE, holder);
+  }
+}
+
+/**
+ * Per-stock end-of-day data. Returns "wait" to retry on the next run (official data missing before the
+ * final time), undefined when there is nothing to list, else the summary. Cost: 5 store calls + 1 market call.
+ * Official data missing for some stocks: wait until close+35, then list those as IEX; nothing official at all: wait until close+55.
+ */
+async function buildEod(
+  store: Store, market: MarketData, m: Meter, session: Extract<Session, { kind: "open" }>, nowMs: number,
+): Promise<EodSummary | undefined | "wait"> {
+  try {
+    const date = session.date;
+    const [set, stocks, rules, mstates] = await Promise.all([store.getSettings(), store.listStocks(), store.getRuleStates(date), store.getMarketStates(date)]);
+    const active = stocks.filter((s) => s.enabled);
+    if (!active.length) return undefined;
+    let official: Record<string, Bar[]> | undefined;
+    if (market.officialDailyBars) {
+      const w = eodWindow(date, session.close, nowMs, set.baselineSessions);
+      try {
+        official = await market.officialDailyBars(active.map((s) => s.symbol), w.startMs, w.endMs);
+      } catch (e) {
+        official = undefined; // retried on the next run until the final time
+        // One notice and one log line per trading date (not per run).
+        const kind = (e as { kind?: string; name?: string } | null)?.kind ?? (e as { name?: string } | null)?.name ?? "unknown";
+        try {
+          if (await once(store, m, date, "eodSipNotice", { type: "OPS_NOTICE", code: "EOD_SIP_UNAVAILABLE", detail: "Official end-of-day prices failed. Retrying; IEX values if it keeps failing." }, nowMs)) {
+            await store.log([{ tMs: nowMs, kind: "ERROR", detail: { what: "eod_sip_failed", kind: String(kind).slice(0, 30) } }]);
+          }
+        } catch { /* notice is optional */ }
+      }
+    }
+    const have = official ? active.filter((s) => hasOfficialToday(official![s.symbol], date)).length : 0;
+    const complete = have === active.length;
+    // Without an official-data source there is nothing to wait for.
+    if (!complete && market.officialDailyBars) {
+      const waitUntil = have > 0 ? EOD_PARTIAL_AFTER_CLOSE_MS : EOD_FINAL_AFTER_CLOSE_MS;
+      if (nowMs < session.close + waitUntil) return "wait";
+    }
+    const needsBaselines = !complete && store.getBaselines !== undefined;
+    const baselines = new Map<string, Baseline>();
+    if (needsBaselines) for (const b of await store.getBaselines!()) baselines.set(b.symbol, b);
+    return {
+      stocks: buildEodStocks({ date, stocks: active, official, states: new Map(mstates.map((x) => [x.symbol, x])), rules, baselines, sessions: set.baselineSessions }),
+    };
+  } catch {
+    // Store trouble: try again next run; at the final time send the plain counts instead.
+    return nowMs < session.close + EOD_FINAL_AFTER_CLOSE_MS ? "wait" : undefined;
   }
 }
 

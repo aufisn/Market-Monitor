@@ -344,7 +344,7 @@ describe("AT-10 a full month including a holiday", () => {
 });
 
 describe("AT-11 early close", () => {
-  it("27 Nov 2026 closes at 13:00: reminders stop, alert listed as unacknowledged at close, session ended at 13:05", async () => {
+  it("27 Nov 2026 closes at 13:00: reminders stop, alert listed as unacknowledged at close, session ended at 13:20", async () => {
     const r = rig([{ symbol: "AAA", enabled: true, high: { mode: "dollar", value: 110 } }], "2026-11-27");
     const t = (hhmm: string) => et("2026-11-27", hhmm);
     await go(r, t("12:30"), 111);
@@ -364,10 +364,10 @@ describe("AT-11 early close", () => {
     expect(r.store.events("UNACK_AT_CLOSE")[0]!.rules[0]).toMatchObject({ state: "UNACKNOWLEDGED_AT_CLOSE", symbol: "AAA" });
     expect(r.store.queue.find((q) => q.event.type === "UNACK_AT_CLOSE")!.tMs).toBe(t("13:00"));
     expect(r.store.events("SESSION_ENDED")).toHaveLength(1);
-    expect(r.store.queue.find((q) => q.event.type === "SESSION_ENDED")!.tMs).toBe(t("13:05"));
+    expect(r.store.queue.find((q) => q.event.type === "SESSION_ENDED")!.tMs).toBe(t("13:20"));
     expect(r.store.events("SESSION_ENDED")[0]!.counts).toMatchObject({ alerts: 1, reminders: 2, unacked: 1 });
   });
-  it("normal day closes at 16:00 and ends at 16:05; next day starts ARMED", async () => {
+  it("normal day closes at 16:00 and the summary follows at 16:20; next day starts ARMED", async () => {
     const r = await alerted();
     await go(r, at("15:59:59"), 111);
     await go(r, at("16:00:00"), 111);

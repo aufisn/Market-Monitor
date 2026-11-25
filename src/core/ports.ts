@@ -59,6 +59,12 @@ export interface MarketData {
   minuteBarsMulti(symbols: Symbol[], startMs: number, endMs: number): Promise<Record<Symbol, Bar[]>>;
   /** Previous session's consolidated daily bar (FR-6.3). */
   previousDaily(symbol: Symbol, beforeDate: TradingDate): Promise<DailyRef | null>;
+  /**
+   * Optional (additive, end-of-day summary): official consolidated (SIP) 1Day bars for many symbols
+   * in ONE call (the adapter may paginate), for bars with start in [startMs, endMs). The caller
+   * keeps endMs at least 15 minutes in the past (free-plan SIP rule). Bars are oldest first.
+   */
+  officialDailyBars?(symbols: Symbol[], startMs: number, endMs: number): Promise<Record<Symbol, Bar[]>>;
 }
 
 // ---------------------------------------------------------------- config
@@ -179,6 +185,41 @@ export interface LogEntry {
   detail: Record<string, unknown>;
 }
 
+// ---------------------------------------------------------------- end-of-day summary
+/** One alert that fired today (the latest cycle of that rule; `count` = cycles that day). */
+export interface EodAlert {
+  rule: RuleKind;
+  tMs: number;
+  count: number;
+  acked: boolean;
+  /** VOLUME rule in "multiple" mode: how many times the usual (IEX) volume it was at the crossing. */
+  multiple?: number;
+}
+export interface EodStock {
+  symbol: Symbol;
+  /** Paused stock: still listed, marked "(alerts off)". */
+  alertsOff: boolean;
+  /** "SIP" = official consolidated numbers; "IEX" = fallback from the intraday data we stored. */
+  source: "SIP" | "IEX";
+  close?: number;
+  prevClose?: number;
+  open?: number;
+  low?: number;
+  high?: number;
+  volume?: number;
+  /** Average full-day volume over recent sessions, same source as `volume`. */
+  avgVolume?: number;
+  alerts: EodAlert[]; // oldest first
+}
+/** Stocks already in display order: alerted first (by first alert time), then A to Z. */
+export interface EodSummary {
+  stocks: EodStock[];
+  /** Set when the summary was cut into several events (each its own queue item, so a retry never resends a part). */
+  part?: { n: number; total: number };
+  /** Price source over ALL parts, for the footer of the last part. */
+  footer?: "SIP" | "IEX" | "MIXED";
+}
+
 // ---------------------------------------------------------------- outbound messages
 /**
  * Core emits semantic events; the chosen UX (DG-3) turns them into text.
@@ -192,7 +233,7 @@ export type OutboundEvent =
   | { type: "BRIEFING"; date: TradingDate; stocks: MarketState[] }
   | { type: "UNACK_AT_CLOSE"; date: TradingDate; rules: RuleState[] }
   | { type: "READY"; date: TradingDate; info: Record<string, unknown> }
-  | { type: "SESSION_ENDED"; date: TradingDate; counts: Record<string, number> }
+  | { type: "SESSION_ENDED"; date: TradingDate; counts: Record<string, number>; eod?: EodSummary }
   | { type: "OPS_NOTICE"; code: string; detail: string }
   | { type: "TEST_ALERT" };
 

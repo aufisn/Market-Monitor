@@ -39,7 +39,7 @@ const store = {
 };
 
 /* ------------------------------------------------------------ app state */
-const mqWide = window.matchMedia("(min-width: 62rem)");
+const mqWide = window.matchMedia("(min-width: 47.5rem)");
 const S = {
   code: store.get("mm.code") || "",
   codeSaved: !!store.get("mm.code"),
@@ -54,12 +54,14 @@ const S = {
   shown: "",
   update: null,
   updaters: [],
-  openMore: new Set(),
   wide: mqWide.matches,
   settings: null,
   log: { rows: [], more: false, loading: false, error: "", kind: "", symbol: "" },
   hist: { rows: [], error: "" },
-  wlSig: "",
+  stack: { order: [], focus: "", crossed: null, banners: new Set() },
+  stackApi: null,
+  canDisableAll: false,
+  pend: new Map(),
   alSig: "",
   brSig: "",
 };
@@ -105,6 +107,7 @@ async function api(path, opt = {}) {
   return data;
 }
 function onUnauthorized() {
+  closeSheet();
   const had = S.codeSaved;
   S.code = ""; S.codeSaved = false; store.del("mm.code");
   S.auth = "need"; S.data = null;
@@ -112,10 +115,12 @@ function onUnauthorized() {
   stopPolling(); ensureScreen(); updateHeader();
 }
 function onLocked(secs, kind) {
+  closeSheet();
   S.lockKind = kind; S.auth = "locked"; S.lockedUntil = Date.now() + secs * 1000; S.data = null;
   stopPolling(); ensureScreen(); updateHeader();
 }
 function onUnconfigured(msg) {
+  closeSheet();
   S.auth = "unconfigured"; S.gateMsg = msg; S.data = null;
   stopPolling(); ensureScreen(); updateHeader();
   schedule(30000);
@@ -179,7 +184,7 @@ function buildAll() {
   if (!d) return [];
   const mc = marketNow();
   const byId = new Map((d.market || []).map((m) => [m.symbol, m]));
-  return (d.stocks || []).map((s) => L.buildVM(s, byId.get(s.symbol), d.rules || [], d.settings, nowMs(), mc.open, { offline: S.conn === "offline", pausedAll: !!d.pausedAll }));
+  return (d.stocks || []).map((s0) => { const s = S.pend.has(s0.symbol) ? { ...s0, paused: S.pend.get(s0.symbol) } : s0; return L.buildVM(s, byId.get(s.symbol), d.rules || [], d.settings, nowMs(), mc.open, { offline: S.conn === "offline", pausedAll: !!d.pausedAll }); });
 }
 const getVM = (sym) => buildAll().find((v) => v.sym === sym);
 const activeRules = () => (S.data?.rules || []).filter(L.isActiveRule);
@@ -244,7 +249,7 @@ function ensureScreen() {
     t.tabIndex = on ? 0 : -1;
   }
   if (key === S.shown) return;
-  S.shown = key; S.update = null; S.updaters = []; S.wlSig = ""; S.alSig = ""; S.brSig = "";
+  S.shown = key; S.update = null; S.updaters = []; S.stackApi = null; S.alSig = ""; S.brSig = "";
   root.replaceChildren();
   root.setAttribute("aria-labelledby", "tab-" + S.tab);
   if (key.startsWith("gate:")) S.update = gateScreen(root, key.slice(5));
@@ -320,14 +325,13 @@ function forgetCode() {
 /* ------------------------------------------------------------ shared pieces */
 const STATUS = {
   OK: ["✓", "OK"], NEAR: ["◔", "NEAR"], CROSSED: ["⚠", "CROSSED – UNACKNOWLEDGED"], ACK: ["✔", "ACKNOWLEDGED"],
-  MUTED: ["\u{1f507}", "MUTED"], PAUSED: ["⏸", "PAUSED"], NODATA: ["—", "NO DATA"], BUILDING: ["◌", "BUILDING"], NOBASELINE: ["◌", "NO BASELINE"],
+  MUTED: ["\u{1f507}", "MUTED"], PAUSED: ["⏸", "Alerts off"], NODATA: ["—", "NO DATA"], BUILDING: ["◌", "BUILDING"], NOBASELINE: ["◌", "NO BASELINE"],
 };
 function statusChip(v) {
-  if (v.pausedAll && v.status === "CROSSED") { const f = document.createDocumentFragment(); f.append(statusChip({ ...v, pausedAll: false }), h("span", { class: "chip st-PAUSED", text: "\u23f8 PAUSED (ALL ALERTS)" })); return f; }
+  if (v.paused && v.status === "CROSSED") { const f = document.createDocumentFragment(); f.append(statusChip({ ...v, paused: false }), h("span", { class: "chip st-PAUSED", text: "\u23f8 Alerts off" })); return f; }
   const [i, t] = STATUS[v.status];
   let extra = "";
   if (v.status === "ACK" && v.ackMs) extra = " " + L.hm(v.ackMs, L.TZ_MU) + " Muscat";
-  if (v.status === "PAUSED" && v.pausedAll) extra = " (ALL ALERTS)";
   if (v.status === "MUTED") extra = " until " + L.both(v.stock.mutedUntilMs);
   return h("span", { class: "chip st-" + v.status, text: i + " " + t + extra });
 }
@@ -346,30 +350,6 @@ function changeEl(v) {
   const up = v.changeAbs >= 0;
   return h("span", { class: "chg " + (up ? "up" : "down"), text: (up ? "▲ " : "▼ ") + L.signed(v.changeAbs, Math.abs(v.last) < 1 ? 4 : 2) + " (" + L.signed(v.changePct) + "%)" });
 }
-function thrBtn(v, which) {
-  const t = v[which], p = which === "high" ? v.hiP : v.loP, R = which.toUpperCase();
-  const fk = v.sym + ":" + which;
-  if (!t) return h("button", { type: "button", class: "edit unset", "data-fk": fk, "aria-label": "Set " + R + " threshold for " + v.sym + ", not set", onclick: () => editThreshold(v.sym, which) }, h("span", { class: "ev", text: "Not set" }), h("span", { class: "pen", "aria-hidden": "true", text: "+" }));
-  const pct = p === undefined ? "needs Prev Close" : L.pctOf(p, v.prev, 1);
-  return h("button", { type: "button", class: "edit", "data-fk": fk, "aria-label": "Edit " + R + " threshold for " + v.sym + ", now " + (p === undefined ? L.signed(t.value) + " percent" : "$" + L.money(p) + ", " + pct + " from Previous Close"), onclick: () => editThreshold(v.sym, which) },
-    h("span", { class: "ev", text: p === undefined ? L.signed(t.value) + "%" : "$" + L.money(p) }), h("span", { class: "ep", text: pct }), h("span", { class: "pen", "aria-hidden": "true", text: "✎" }));
-}
-function volBtn(v) {
-  const fk = v.sym + ":vol";
-  const label = v.vol ? L.volumeText(v.vol) : "Not set";
-  return h("button", { type: "button", class: "edit" + (v.vol ? "" : " unset"), "data-fk": fk, "aria-label": (v.vol ? "Edit" : "Set") + " volume threshold for " + v.sym + ", now " + label, onclick: () => editVolume(v.sym) },
-    h("span", { class: "ev", text: label }), h("span", { class: "pen", "aria-hidden": "true", text: v.vol ? "✎" : "+" }));
-}
-function volLine(v) {
-  const bits = ["IEX volume " + L.compact(v.cumVolume)];
-  if (Number.isFinite(v.volAvgMultiple)) bits.push(v.volAvgMultiple.toFixed(1) + "x the usual at this time");
-  else bits.push("average not available");
-  if (v.baseline?.status === "BUILDING") bits.push("baseline building");
-  if (v.baseline?.status === "NO_BASELINE") bits.push("no baseline yet");
-  if (Number.isFinite(v.baseline?.thresholdShares)) bits.push("= " + L.compact(v.baseline.thresholdShares) + " shares now");
-  if (v.vol && v.vol.mode === "absolute" && Number.isFinite(v.cumVolume)) bits.push(Math.round((v.cumVolume / v.vol.value) * 100) + "% of threshold");
-  return h("p", { class: "vol" }, bits.join(" · ") + " · alert at ", volBtn(v));
-}
 function distLine(v) {
   if (!v.nearest) return h("p", { class: "dist sm", text: "No LOW or HIGH set, so no distance to show." });
   const n = v.nearest;
@@ -387,90 +367,265 @@ function gaugeEl(v) {
   return h("div", {}, h("div", { class: "gauge", role: "img", "aria-label": label },
     h("span", { class: "track" }), mk("p", g.p, "P"), mk("o", g.o, "O"), mk("l" + (g.beyond ? " beyond" : ""), g.l, "▲"),
     h("span", { class: "gl", "aria-hidden": "true" }, h("span", { text: "LOW " + L.money(v.loP) }), h("span", { text: "HIGH " + L.money(v.hiP) }))),
-    h("p", { class: "gkey", "aria-hidden": "true", text: "P = Previous Close · O = Opening (IEX) · ▲ = Last" }));
+    h("p", { class: "gkey", "aria-hidden": "true", text: "P prev close · O open (IEX) · ▲ last" }));
 }
 function ackBtn(v, label) {
-  return h("button", { type: "button", class: "btn pri", "data-fk": v.sym + ":ack", text: label || "Acknowledge " + v.sym, onclick: () => act(() => api("/api/ack", { method: "POST", body: { symbol: v.sym } }), (r) => "Acknowledged " + v.sym + " (" + r.acknowledged + " rule" + (r.acknowledged === 1 ? "" : "s") + ")") });
+  return h("button", { type: "button", class: "btn pri", "data-fk": v.sym + ":ack", text: label || "Acknowledge", "aria-label": "Acknowledge " + v.sym, onclick: () => act(() => api("/api/ack", { method: "POST", body: { symbol: v.sym } }), (r) => "Acknowledged " + v.sym + " (" + r.acknowledged + " rule" + (r.acknowledged === 1 ? "" : "s") + ")") });
 }
 function moveBtn(v) {
   const r = v.active.find((x) => x.rule === "HIGH" || x.rule === "LOW");
   if (!r) return null;
-  return h("button", { type: "button", class: "btn", "data-fk": v.sym + ":move", text: "Ack + move…", onclick: () => editThreshold(v.sym, r.rule.toLowerCase(), { move: r }) });
+  return h("button", { type: "button", class: "btn", "data-fk": v.sym + ":move", text: "Ack + move…", onclick: () => ackMoveSheet(v.sym, r.rule.toLowerCase(), r) });
 }
-function moreBlock(v) {
-  const open = S.openMore.has(v.sym);
-  const d = h("details", { class: "more", ...(open ? { open: true } : {}) }, h("summary", { text: "More: mute, pause, remove", "data-fk": v.sym + ":more" }),
-    h("div", { class: "cact" },
-      h("button", { type: "button", class: "btn", text: v.muted ? "Unmute" : "Mute…", onclick: () => (v.muted ? act(() => api("/api/mute", { method: "POST", body: { symbol: v.sym, minutes: null } }), () => v.sym + " unmuted") : muteSheet(v)) }),
-      h("button", { type: "button", class: "btn", text: v.stock.paused ? "Resume" : "Pause", onclick: () => act(() => api("/api/stocks/" + encodeURIComponent(v.sym), { method: "PUT", body: { paused: !v.stock.paused } }), () => v.sym + (v.stock.paused ? " resumed" : " paused")) }),
-      h("button", { type: "button", class: "btn danger", text: "Remove…", onclick: () => removeSheet(v) })));
-  d.addEventListener("toggle", () => { if (d.open) S.openMore.add(v.sym); else S.openMore.delete(v.sym); });
-  return d;
+/* ------------------------------------------------------------ WATCHLIST (card stack, steps 1 and 4) */
+const dollars = (n) => (Number.isFinite(n) ? "$" + L.money(n) : "n/a");
+const levelText = (t, p) => (!t ? "—" : p === undefined ? L.signed(t.value) + "% (needs Prev Close)" : "$" + L.money(p));
+function volNowText(v) {
+  return L.compact(v.cumVolume) + (Number.isFinite(v.volAvgMultiple) ? " · " + v.volAvgMultiple.toFixed(1) + "x usual" : " · usual n/a");
+}
+function volAlertText(v) {
+  if (!v.vol) return "not set";
+  const pct = v.vol.mode === "absolute" && Number.isFinite(v.cumVolume) ? " (" + Math.round((v.cumVolume / v.vol.value) * 100) + "% reached)" : "";
+  return L.volumeText(v.vol) + pct;
+}
+function volUsualText(v) {
+  const bits = ["IEX volume " + L.compact(v.cumVolume)];
+  bits.push(Number.isFinite(v.volAvgMultiple) ? v.volAvgMultiple.toFixed(1) + "x the usual at this time" : "usual average not available");
+  if (v.baseline?.status === "BUILDING") bits.push("baseline building");
+  if (v.baseline?.status === "NO_BASELINE") bits.push("no baseline yet");
+  if (Number.isFinite(v.baseline?.thresholdShares)) bits.push("= " + L.compact(v.baseline.thresholdShares) + " shares now");
+  return bits.join(" · ");
+}
+function rw(label, val) { return h("div", { class: "rw" }, h("dt", { text: label }), h("dd", { class: "num", text: val })); }
+function switchBtn(v, id) {
+  const on = !v.paused;
+  return h("button", { type: "button", class: "sw", role: "switch", "aria-checked": on ? "true" : "false", "aria-label": "Alerts for " + v.sym, "data-fk": v.sym + ":sw", onclick: () => toggleAlerts(v.sym) },
+    h("span", { text: "Alerts" }), h("span", { class: "t", "aria-hidden": "true" }));
+}
+function cardActions(v) {
+  const crossed = v.status === "CROSSED";
+  return h("div", { class: "cact" },
+    crossed ? h("div", { class: "arow" }, ackBtn(v), moveBtn(v)) : null,
+    h("button", { type: "button", class: "btn", "data-fk": v.sym + ":edit", text: "Edit", onclick: () => stockSheet(v.sym) }),
+    h("button", { type: "button", class: "btn", "data-fk": v.sym + ":mute", text: v.muted ? "Unmute" : "Mute…", onclick: () => (v.muted ? act(() => api("/api/mute", { method: "POST", body: { symbol: v.sym, minutes: null } }), () => v.sym + " unmuted") : muteSheet(v)) }),
+    h("button", { type: "button", class: "btn danger", "data-fk": v.sym + ":remove", text: "Remove…", onclick: () => removeSheet(v) }));
+}
+function cardEl(v) {
+  const wide = S.wide;
+  const price = h("div", { class: "pr dm" }, h("span", { class: "big num", text: Number.isFinite(v.last) ? "$" + L.money(v.last) : "—" }), changeEl(v));
+  const chip = h("div", { class: "stchip" }, statusChip(v));
+  const age = h("div", { class: "dm age" }, h("span", { class: "lastt", text: lastTime(v) }), ageChip(v));
+  const gblock = h("div", { class: "dm gblk" }, gaugeEl(v), distLine(v));
+  const note = v.notes ? h("p", { class: "sm dm", text: "Note: " + v.notes }) : null;
+  let body;
+  if (wide) {
+    body = [
+      h("div", { class: "ctop" }, h("h3", { text: v.sym }), price, chip, switchBtn(v)),
+      age,
+      h("div", { class: "cols" },
+        h("dl", { class: "rws dm" }, rw("Prev Close", dollars(v.prev)), rw("Open", dollars(v.open)), rw("Day high", dollars(v.dayHigh)), rw("Day low", dollars(v.dayLow))),
+        h("dl", { class: "rws dm" }, rw("LOW alert", levelText(v.low, v.loP)), rw("HIGH alert", levelText(v.high, v.hiP)), rw("Volume alert", volAlertText(v)), rw("Volume now", L.compact(v.cumVolume))),
+        h("div", {}, gblock, h("p", { class: "sm dm", text: volUsualText(v) }))),
+      note];
+  } else {
+    const hasVol = Number.isFinite(v.cumVolume);
+    const shortM = (n) => (n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : L.compact(n));
+    const volNow = hasVol ? shortM(v.cumVolume) : "n/a";
+    const volAl = !v.vol ? "not set" : v.vol.mode === "absolute" ? shortM(v.vol.value) + " sh" + (hasVol ? " (" + Math.round((v.cumVolume / v.vol.value) * 100) + "%)" : "") : v.vol.value + "x usual";
+    const lv = (t, p) => (!t ? "\u2014" : p === undefined ? L.signed(t.value) + "%" : "$" + L.money(p));
+    body = [
+      h("div", { class: "ctop" }, h("h3", { text: v.sym }), switchBtn(v)),
+      h("div", { class: "prow" }, h("div", { class: "dm" }, h("div", { class: "big num", text: Number.isFinite(v.last) ? "$" + L.money(v.last) : "\u2014" }), changeEl(v)), chip),
+      h("div", { class: "dm age", title: lastTime(v) }, h("span", { class: "lastt", text: Number.isFinite(v.lastT) ? "Last " + L.hm(v.lastT, L.TZ_ET, true) + " ET" : "No trade today" }), ageChip(v)),
+      h("dl", { class: "rws g2 dm" }, rw("Prev Close", dollars(v.prev)), rw("Open", dollars(v.open)),
+        rw("Day high", dollars(v.dayHigh)), rw("Day low", dollars(v.dayLow)),
+        rw("LOW alert", lv(v.low, v.loP)), rw("HIGH alert", lv(v.high, v.hiP)),
+        rw("Volume now", volNow), rw("Volume alert", volAl)),
+      v.baseline?.status === "BUILDING" || v.baseline?.status === "NO_BASELINE" ? h("p", { class: "sm dm", text: "Usual-volume average: " + (v.baseline.status === "BUILDING" ? "building" : "not available yet") }) : null,
+      gblock, Number.isFinite(v.volAvgMultiple) ? h("p", { class: "sm dm", text: "Volume is " + v.volAvgMultiple.toFixed(1) + "x the usual at this time" }) : null, note];
+  }
+  return h("article", { class: "card cd st-" + v.status + " f-" + v.fresh + (v.paused ? " paused" : "") + (v.status === "CROSSED" ? " alert" : ""), "aria-label": v.sym }, body, cardActions(v));
 }
 
-/* ------------------------------------------------------------ WATCHLIST */
-function cardEl(v) {
-  const crossed = v.status === "CROSSED";
-  return h("article", { class: "card st-" + v.status + " f-" + v.fresh, "aria-label": v.sym },
-    h("div", { class: "ctop" }, h("h3", { text: v.sym }), statusChip(v)),
-    h("div", {}, h("div", { class: "lastv" }, h("span", { class: "big num", text: Number.isFinite(v.last) ? "$" + L.money(v.last) : "—" }), changeEl(v)), h("div", { class: "lastt", text: lastTime(v) })),
-    h("div", {}, ageChip(v)),
-    h("dl", { class: "nums" },
-      cell("Prev Close", Number.isFinite(v.prev) ? "$" + L.money(v.prev) : "n/a"), cell("Opening (IEX)", Number.isFinite(v.open) ? "$" + L.money(v.open) : "n/a"),
-      cell("LOW", thrBtn(v, "low")), cell("HIGH", thrBtn(v, "high"))),
-    h("div", { class: "blk" }, gaugeEl(v), distLine(v), volLine(v),
-      Number.isFinite(v.dayHigh) ? h("p", { class: "sm", text: "Day high / low (IEX): $" + L.money(v.dayHigh) + " / $" + L.money(v.dayLow) }) : null,
-      v.notes ? h("p", { class: "sm", text: "Note: " + v.notes }) : null),
-    crossed ? h("div", { class: "cact" }, ackBtn(v), moveBtn(v)) : null,
-    moreBlock(v));
+async function toggleAlerts(sym) {
+  const v = getVM(sym);
+  if (!v || S.pend.has(sym)) return;
+  const nextPaused = !v.paused;
+  S.pend.set(sym, nextPaused); // optimistic: the card changes now, and goes back if the server says no
+  refreshAll();
+  try {
+    await api("/api/stocks/" + encodeURIComponent(sym), { method: "PUT", body: { paused: nextPaused } });
+  } catch (e) {
+    S.pend.delete(sym); refreshAll();
+    if (e instanceof NetError) toast("No connection. Alerts for " + sym + " were not changed.", true);
+    else if (e instanceof ApiError) { if (![401, 429, 503].includes(e.status)) toast(e.message, true); }
+    else throw e;
+    return;
+  }
+  if (!nextPaused && ((v.hiP !== undefined && L.crossedBy("HIGH", v.hiP, v.last)) || (v.loP !== undefined && L.crossedBy("LOW", v.loP, v.last)))) toast(sym + " alerts are on. The price is already beyond a level, so an alert will be sent right away.");
+  await poll();
+  S.pend.delete(sym); refreshAll();
 }
-function cell(label, val) { return h("div", { class: "cell" }, h("dt", { text: label }), h("dd", {}, val)); }
-function tableEl(vms) {
-  const th = (t) => h("th", { scope: "col", text: t });
-  return h("div", { class: "tblwrap" }, h("table", { class: "tbl" },
-    h("caption", { class: "sr", text: "Watchlist, sorted by what needs action first" }),
-    h("thead", {}, h("tr", {}, ["Symbol", "Last recorded", "Prev Close", "Opening (IEX)", "LOW", "HIGH", "Range (P prev, O open, \u25b2 last)", "Status", "IEX volume", "Actions"].map(th))),
-    h("tbody", {}, vms.map((v) => h("tr", { class: "st-" + v.status },
-      h("th", { scope: "row", text: v.sym }),
-      h("td", {}, h("div", { class: "big2", text: Number.isFinite(v.last) ? "$" + L.money(v.last) : "—" }), changeEl(v), h("div", { class: "lastt", text: lastTime(v) }), ageChip(v)),
-      h("td", { text: Number.isFinite(v.prev) ? "$" + L.money(v.prev) : "n/a" }), h("td", { text: Number.isFinite(v.open) ? "$" + L.money(v.open) : "n/a" }),
-      h("td", {}, thrBtn(v, "low")), h("td", {}, thrBtn(v, "high")),
-      h("td", {}, gaugeEl(v), h("div", { class: "sm", text: v.nearest ? (v.nearest.dist < 0 ? v.nearest.which + " crossed" : v.nearest.which + " " + Math.abs(v.nearest.pct).toFixed(1) + "% away") : "" })),
-      h("td", {}, statusChip(v)),
-      h("td", {}, h("div", { text: L.compact(v.cumVolume) }), h("div", { class: "sm", text: Number.isFinite(v.volAvgMultiple) ? v.volAvgMultiple.toFixed(1) + "x usual" : "avg n/a" }), volBtn(v)),
-      h("td", {}, v.status === "CROSSED" ? h("div", { class: "cact" }, ackBtn(v, "Acknowledge"), moveBtn(v)) : null, moreBlock(v)))))));
-}
+
 function watchlistTab(root) {
-  const addBtn = h("button", { type: "button", class: "btn pri", text: "+ Add stock", "data-fk": "add", onclick: addSheet });
+  const st = S.stack;
+  const recs = new Map(); // symbol -> { el, sig, ups }
+  const chips = new Map(); // symbol -> { btn, dot, sr }
+  const addBtn = h("button", { type: "button", class: "btn pri", text: "+ Add stock", "data-fk": "add", onclick: () => stockSheet() });
   const ackAll = h("button", { type: "button", class: "btn", "data-fk": "ackall", onclick: ackAllSheet });
-  const pauseAll = h("button", { type: "button", class: "btn", "data-fk": "pauseall", onclick: pauseAllSheet });
-  const test = h("button", { type: "button", class: "btn", text: "Send test alert", onclick: () => act(() => api("/api/test", { method: "POST", body: {} }), () => "Test alert sent to Telegram.") });
+  const more = h("button", { type: "button", class: "btn", text: "More\u2026", "data-fk": "more", onclick: moreSheet });
   const info = h("p", { class: "sm grow", id: "wlInfo" });
-  const note = h("div", {});
-  const list = h("div", { id: "wl" });
-  put(root, h("div", { class: "toolbar" }, addBtn, ackAll, pauseAll, test, info), note, list);
+  const noteMarket = h("div", {});
+  const noteOff = h("div", { role: "status" });
+  const banners = h("div", { role: "status" });
+  const strip = h("div", { class: "strip", role: "group", "aria-label": "Jump to a stock" });
+  const stage = h("div", { class: "stage", role: "group", "aria-roledescription": "carousel", "aria-label": "Watchlist cards. Swipe sideways or use the left and right arrow keys." });
+  const empty = h("div", { class: "panel empty", hidden: true }, h("p", { text: "No stocks yet. Add one to start watching it." }));
+  const say = h("p", { class: "sr", "aria-live": "polite" });
+  put(root, h("div", { class: "toolbar" }, addBtn, ackAll, more, info), noteMarket, noteOff, banners, empty, strip, stage, say);
+  let drag = null; // { id, x0, y0, axis, dx }
+
+  const idx = () => st.order.indexOf(st.focus);
+  function lay() {
+    const n = st.order.length, fi = idx();
+    const dx = drag && drag.axis === "h" ? L.dragOffset(drag.dx, fi, n) : 0;
+    st.order.forEach((sym, k) => {
+      const el = recs.get(sym)?.el;
+      if (!el) return;
+      const off = k - fi, a = Math.abs(off);
+      let t = "none", o = 1, z = 10;
+      if (off === 0) { t = dx ? "translateX(" + dx + "px)" : "none"; }
+      else if (a <= 2) { t = "translateX(" + off * 14 + "px) scale(" + (1 - a * 0.05) + ")"; o = a === 1 ? 0.9 : 0.6; z = 10 - a; }
+      else { t = "scale(.85)"; o = 0; z = 0; }
+      el.style.transform = t; el.style.opacity = String(o); el.style.zIndex = String(z);
+      el.style.transition = dx && off === 0 ? "none" : "";
+      el.style.visibility = a <= 2 ? "visible" : "hidden";
+      el.inert = off !== 0;
+    });
+  }
+  function updateStrip(byS) {
+    for (const [sym, c] of chips) if (!st.order.includes(sym)) { c.btn.remove(); chips.delete(sym); }
+    st.order.forEach((sym, k) => {
+      let c = chips.get(sym);
+      if (!c) {
+        const dot = h("span", { class: "dot", "aria-hidden": "true", hidden: true });
+        const sr = h("span", { class: "sr" });
+        const btn = h("button", { type: "button", class: "chipb", onclick: () => go(sym) }, h("span", { text: sym }), dot, sr);
+        c = { btn, dot, sr }; chips.set(sym, c);
+      }
+      if (strip.children[k] !== c.btn) strip.insertBefore(c.btn, strip.children[k] || null);
+      const v = byS.get(sym);
+      const alert = v?.status === "CROSSED";
+      c.btn.classList.toggle("on", sym === st.focus);
+      c.btn.classList.toggle("off", !!v?.paused);
+      if (sym === st.focus) c.btn.setAttribute("aria-current", "true"); else c.btn.removeAttribute("aria-current");
+      c.dot.hidden = !alert;
+      if (sym === st.focus && !c.shown) { c.shown = true; c.btn.scrollIntoView({ inline: "nearest", block: "nearest" }); } else if (sym !== st.focus) c.shown = false;
+      c.sr.textContent = (alert ? ", alert active" : "") + (v?.paused ? ", alerts off" : "");
+    });
+  }
+  function renderBanners() {
+    const key = [...st.banners].join(",");
+    if (banners.dataset.k === key) return;
+    banners.dataset.k = key;
+    fill(banners, [...st.banners].map((sym) => h("div", { class: "notice bad banner" }, h("span", { text: sym + " crossed – " }),
+      h("button", { type: "button", class: "btn", text: "Show", "aria-label": "Show " + sym, onclick: () => go(sym) }))));
+  }
+  function go(sym) {
+    if (!recs.has(sym)) return;
+    const changed = sym !== st.focus;
+    st.focus = sym; st.banners.delete(sym);
+    renderBanners(); lay();
+    updateStrip(new Map(L.sortVMs(buildAll()).map((v) => [v.sym, v])));
+    if (changed) say.textContent = "Showing " + sym;
+  }
+  function move(d) {
+    const k = Math.max(0, Math.min(st.order.length - 1, idx() + d));
+    if (st.order[k] && st.order[k] !== st.focus) go(st.order[k]);
+  }
+  S.stackApi = { move };
+
+  /* pointer: only a mostly sideways drag changes the card; vertical gestures scroll the page (touch-action: pan-y) */
+  stage.addEventListener("pointerdown", (e) => {
+    if (drag || !e.isPrimary || (e.pointerType === "mouse" && e.button !== 0)) return;
+    drag = { id: e.pointerId, x0: e.clientX, y0: e.clientY, axis: null, dx: 0 };
+  });
+  stage.addEventListener("pointermove", (e) => {
+    if (!drag || e.pointerId !== drag.id) return;
+    const dx = e.clientX - drag.x0, dy = e.clientY - drag.y0;
+    if (!drag.axis) {
+      drag.axis = L.dragAxis(dx, dy);
+      if (drag.axis === "h") { try { stage.setPointerCapture(e.pointerId); } catch { /* not capturable: the drag still works over the stage */ } }
+    }
+    if (drag.axis === "h") { drag.dx = dx; lay(); }
+  });
+  const endDrag = (e) => {
+    if (!drag || e.pointerId !== drag.id) return;
+    const d = drag; drag = null;
+    if (d.axis !== "h" || e.type === "pointercancel") { lay(); return; }
+    const k = L.dragSettle(d.dx, idx(), st.order.length);
+    if (st.order[k] !== st.focus) go(st.order[k]); else lay();
+  };
+  stage.addEventListener("pointerup", endDrag);
+  stage.addEventListener("pointercancel", endDrag);
+
+  S.updaters.push(() => { for (const r of recs.values()) for (const f of r.ups) f(); });
+
   return () => {
     const vms = L.sortVMs(buildAll());
+    const byS = new Map(vms.map((v) => [v.sym, v]));
     const act_ = activeRules().length;
-    pauseAll.textContent = S.data?.pausedAll ? "Resume all alerts" : "Pause all alerts";
+    const allOff = L.allAlertsOff(vms);
     ackAll.textContent = "Acknowledge all (" + act_ + ")"; ackAll.disabled = act_ === 0;
-    info.textContent = vms.length + " stock" + (vms.length === 1 ? "" : "s") + ", most urgent first";
+    S.canDisableAll = vms.length > 0 && !allOff;
+    info.textContent = vms.length + " stock" + (vms.length === 1 ? "" : "s");
     const mc = marketNow();
-    const nk = (mc.open ? "" : "closed") + (S.data?.pausedAll ? "P" : "");
-    if (note.dataset.k !== nk) { note.dataset.k = nk; fill(note, S.data?.pausedAll ? h("p", { class: "notice bad", role: "status", text: "⏸ ALL ALERTS PAUSED. No alerts or reminders are sent until you resume." }) : null, mc.open ? null : h("p", { class: "notice warn", text: "The market is closed. Prices below are from the last session and are not moving." })); }
-    const sig = S.wide + JSON.stringify(vms, (k, x) => (k === "ageS" ? undefined : x));
-    if (sig === S.wlSig) return;
-    S.wlSig = sig;
-    const fk = document.activeElement?.closest?.("#wl") ? document.activeElement.dataset.fk : null;
-    S.updaters = [];
-    list.replaceChildren(vms.length === 0
-      ? h("div", { class: "panel empty" }, h("p", { text: "No stocks yet. Add one to start watching it." }))
-      : S.wide ? tableEl(vms) : h("div", { class: "list" }, vms.map(cardEl)));
-    if (fk) list.querySelector('[data-fk="' + CSS.escape(fk) + '"]')?.focus();
-    for (const f of S.updaters) f();
+    if (noteMarket.dataset.k !== String(mc.open)) { noteMarket.dataset.k = String(mc.open); fill(noteMarket, mc.open ? null : h("p", { class: "notice warn", text: "The market is closed. Prices below are from the last session and are not moving." })); }
+    if (noteOff.dataset.k !== String(allOff)) { noteOff.dataset.k = String(allOff); fill(noteOff, allOff ? h("p", { class: "notice bad", text: "All alerts are off. Turn stocks back on with the switch on each card." }) : null); }
+
+    /* order is frozen while the page is in use: opens on the most urgent stock, new stocks go last */
+    const prevOrder = st.order;
+    st.order = L.stackOrder(prevOrder, vms.map((v) => v.sym));
+    st.focus = L.focusAfter(prevOrder, st.order, st.focus);
+    const nc = L.newlyCrossed(st.crossed, vms);
+    st.crossed = new Set(vms.filter((v) => v.status === "CROSSED").map((v) => v.sym));
+    for (const s of nc) if (s !== st.focus) st.banners.add(s);
+    for (const s of [...st.banners]) if (!st.crossed.has(s) || s === st.focus || !byS.has(s)) st.banners.delete(s);
+    renderBanners();
+
+    empty.hidden = vms.length > 0;
+    strip.hidden = stage.hidden = vms.length === 0;
+    /* rebuild only the cards that changed, so the focused card, a drag and keyboard focus survive the 15 s poll */
+    for (const sym of [...recs.keys()]) if (!byS.has(sym)) { recs.get(sym).el.remove(); recs.delete(sym); }
+    for (const sym of st.order) {
+      const v = byS.get(sym);
+      const sig = S.wide + JSON.stringify(v, (k, x) => (k === "ageS" ? undefined : x));
+      const old = recs.get(sym);
+      if (old && old.sig === sig) continue;
+      const fk = old && old.el.contains(document.activeElement) ? document.activeElement.dataset.fk : null;
+      const saved = S.updaters; S.updaters = [];
+      const el = cardEl(v);
+      const ups = S.updaters; S.updaters = saved;
+      for (const f of ups) f();
+      if (old) old.el.replaceWith(el);
+      recs.set(sym, { el, sig, ups });
+      if (fk) el.querySelector('[data-fk="' + CSS.escape(fk) + '"]')?.focus();
+    }
+    st.order.forEach((sym, k) => { if (stage.children[k] !== recs.get(sym).el) stage.insertBefore(recs.get(sym).el, stage.children[k] || null); });
+    updateStrip(byS);
+    lay();
   };
 }
-mqWide.addEventListener("change", () => { S.wide = mqWide.matches; S.wlSig = ""; refreshAll(); });
+mqWide.addEventListener("change", () => { S.wide = mqWide.matches; refreshAll(); });
+document.addEventListener("keydown", (e) => {
+  if ((e.key !== "ArrowLeft" && e.key !== "ArrowRight") || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+  if (!S.stackApi || S.tab !== "watchlist" || sheet.open) return;
+  const t = e.target;
+  if (t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+  e.preventDefault();
+  S.stackApi.move(e.key === "ArrowRight" ? 1 : -1);
+});
+
 
 /* ------------------------------------------------------------ actions */
 async function act(fn, okMsg) {
@@ -487,21 +642,79 @@ async function act(fn, okMsg) {
   }
 }
 
-/* ------------------------------------------------------------ bottom sheet */
+/* ------------------------------------------------------------ bottom sheet (step 2: only Cancel closes a form) */
 const sheet = $("#sheet");
-let sheetReturn = null;
+const SH = { ret: null, snap: "", dc: null, pane: null, keep: null, hist: false, skipPop: false, esc: 0, lastFocus: null };
+/** Everything the person can change in the open sheet: field values, radio/checkbox state and switches. */
+const snapshot = () => JSON.stringify(
+  [...sheet.querySelectorAll("input,select,textarea")].map((e) => (e.type === "checkbox" || e.type === "radio" ? e.checked : e.value))
+    .concat([...sheet.querySelectorAll('[role="switch"]')].map((e) => e.getAttribute("aria-checked"))));
 function openSheet(returnFk, build) {
-  sheetReturn = returnFk;
+  SH.ret = returnFk;
   sheet.replaceChildren();
-  build(sheet);
-  if (!sheet.open) sheet.showModal();
+  const pane = h("div", { class: "pane" });
+  const keep = h("button", { type: "button", class: "btn pri", text: "Keep editing", onclick: keepEditing });
+  const dc = h("div", { class: "confirm", hidden: true, role: "alertdialog", "aria-labelledby": "dcT" },
+    h("h3", { id: "dcT", text: "Discard your changes?" }), h("p", { text: "What you typed in this form will be lost." }),
+    h("div", { class: "dact" }, keep, h("button", { type: "button", class: "btn danger", text: "Discard", onclick: closeSheet })));
+  SH.pane = pane; SH.dc = dc; SH.keep = keep;
+  sheet.append(pane, dc);
+  build(pane);
+  SH.snap = snapshot();
+  if (!sheet.open) {
+    sheet.showModal();
+    try { history.pushState({ mmSheet: 1 }, ""); SH.hist = true; } catch { /* no history: the form still works */ }
+  }
 }
+function showDiscard() {
+  SH.lastFocus = document.activeElement;
+  SH.pane.hidden = true; SH.dc.hidden = false; SH.keep.focus();
+}
+function keepEditing() {
+  SH.dc.hidden = true; SH.pane.hidden = false;
+  if (SH.lastFocus && SH.pane.contains(SH.lastFocus)) SH.lastFocus.focus(); else SH.pane.querySelector("input,select,textarea,button")?.focus();
+}
+/** Cancel, the phone's back gesture and Esc-less dismissals all end up here: close at once if nothing changed, else ask. */
+function cancelSheet() {
+  if (!sheet.open || !SH.dc || !SH.dc.hidden) return;
+  if (snapshot() === SH.snap) closeSheet(); else showDiscard();
+}
+/** Closes for good (Save worked, Discard, nothing changed). */
 function closeSheet() { if (sheet.open) sheet.close(); }
 sheet.addEventListener("close", () => {
+  if (sheet.open) return; // opened again before this event arrived: leave the new sheet alone
   sheet.replaceChildren();
-  if (sheetReturn) { const el = document.querySelector('[data-fk="' + CSS.escape(sheetReturn) + '"]'); if (el) el.focus(); }
+  SH.dc = SH.pane = SH.keep = null;
+  if (SH.hist) { SH.hist = false; SH.skipPop = true; try { if (history.state && history.state.mmSheet) history.back(); else SH.skipPop = false; } catch { SH.skipPop = false; } }
+  if (SH.ret) { const el = document.querySelector('[data-fk="' + CSS.escape(SH.ret) + '"]'); if (el) el.focus(); }
 });
-sheet.addEventListener("click", (e) => { if (e.target === sheet) closeSheet(); });
+/* Esc does nothing. A cancel event without a recent Esc is the phone's back gesture: treat it like Cancel. */
+sheet.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.preventDefault(); SH.esc = performance.now(); } });
+sheet.addEventListener("cancel", (e) => { e.preventDefault(); if (performance.now() - SH.esc > 300) cancelSheet(); });
+window.addEventListener("popstate", () => {
+  if (SH.skipPop) { SH.skipPop = false; return; }
+  if (!sheet.open || !SH.dc) return;
+  SH.hist = false; // the browser already removed our entry
+  if (!SH.dc.hidden || snapshot() !== SH.snap) {
+    try { history.pushState({ mmSheet: 1 }, ""); SH.hist = true; } catch { /* ignore */ }
+    if (SH.dc.hidden) showDiscard();
+  } else sheet.close();
+});
+/** A confirm sheet's action: closes only when it worked; on an error the sheet stays and shows the message. */
+async function sheetAct(fn, okMsg, err, btns) {
+  btns.forEach((b) => b && (b.disabled = true)); err.textContent = "";
+  try {
+    const r = await fn();
+    closeSheet();
+    if (okMsg) toast(okMsg(r));
+    poll();
+  } catch (e) {
+    btns.forEach((b) => b && (b.disabled = false));
+    if (e instanceof NetError) err.textContent = "No connection. Nothing was changed.";
+    else if (e instanceof ApiError) { if (![401, 429, 503].includes(e.status)) err.textContent = e.message; }
+    else throw e;
+  }
+}
 function seg(name, options, selected, onchange) {
   const wrap = h("div", { class: "seg" });
   for (const [val, text] of options) {
@@ -513,101 +726,36 @@ const fill = (el, ...kids) => { el.replaceChildren(); add(el, kids); };
 const put = (el, ...kids) => add(el, kids);
 const sheetTitle = (t) => h("h2", { id: "sheetTitle", text: t });
 
-/* edit LOW / HIGH in place (FR-8.5, FR-2.4) */
-function editThreshold(sym, which, opt = {}) {
+/* Ack + move: its own small sheet. It still calls POST /api/ack-move. */
+function ackMoveSheet(sym, which, rule) {
   const v = getVM(sym);
   if (!v) return;
   const R = which.toUpperCase();
   const cur = v[which];
   const otherP = which === "high" ? v.loP : v.hiP;
-  let mode = cur?.mode || "dollar", value = cur ? String(cur.value) : "", preset = null;
-  if (opt.move) {
-    const base = which === "high" ? v.hiP : v.loP;
-    if (base !== undefined) { mode = "dollar"; value = (base * (which === "high" ? 1.01 : 0.99)).toFixed(2); preset = true; }
-  }
-  openSheet(sym + ":" + which, (root) => {
+  let mode = cur?.mode || "dollar", value = cur ? String(cur.value) : "";
+  const base = which === "high" ? v.hiP : v.loP;
+  if (base !== undefined) { mode = "dollar"; value = (base * (which === "high" ? 1.01 : 0.99)).toFixed(2); }
+  openSheet(sym + ":move", (root) => {
     const inp = h("input", { class: "in", id: "edVal", type: "text", inputmode: "decimal", autocomplete: "off", value, "aria-describedby": "edPrev edErr", autofocus: true });
     const prev = h("div", { class: "preview", id: "edPrev", "aria-live": "polite" });
     const err = h("p", { class: "err", id: "edErr", role: "alert" });
-    const confirmBox = h("div", { class: "confirm", hidden: true, role: "alertdialog", "aria-labelledby": "cfT" },
-      h("h3", { id: "cfT", text: "This will alert immediately. Save?" }), h("p", { id: "cfP" }));
     const unitSeg = seg("unit", [["dollar", "$ price"], ["percent", "% from Previous Close"]], mode, (m) => { mode = m; calc(); inp.focus(); });
-    const lab = h("label", { for: "edVal", text: "New " + R });
     const save = h("button", { type: "submit", class: "btn pri", text: "Save" });
-    const cancel = h("button", { type: "button", class: "btn", text: "Cancel", onclick: closeSheet });
-    const remove = cur && !opt.move ? h("button", { type: "button", class: "btn danger", text: "Remove " + R, onclick: () => doSave(null, false) }) : null;
-    const yes = h("button", { type: "button", class: "btn pri", text: "Yes, save and alert", onclick: () => doSave(last, true) });
-    const no = h("button", { type: "button", class: "btn", text: "No, go back", onclick: () => { confirmBox.hidden = true; main.hidden = false; inp.focus(); } });
-    confirmBox.append(h("div", { class: "dact" }, yes, no));
     let last = null;
     function calc() {
       const r = L.evalThreshold({ which, mode, text: inp.value, prev: v.prev, last: v.last, otherPrice: otherP });
       last = r.state === "ok" ? r : null;
       err.textContent = r.state === "error" ? r.err : "";
-      prev.textContent = r.state === "ok" ? r.preview + (r.crossed ? ". The latest price is already beyond this level, so saving will alert at once." : "") : r.state === "empty" ? "Type a value to see what it means." : "";
+      prev.textContent = r.state === "ok" ? r.preview : r.state === "empty" ? "Type a value to see what it means." : "";
     }
     inp.addEventListener("input", calc);
-    async function doSave(r, confirmed) {
-      [save, remove, yes].forEach((b) => b && (b.disabled = true));
-      try {
-        if (opt.move) {
-          const vs = r.mode === "percent" ? r.value + "%" : String(r.value);
-          const mv = await api("/api/ack-move", { method: "POST", body: { symbol: sym, rule: opt.move.rule, cycle: opt.move.cycle, value: vs } });
-          closeSheet(); toast(R + " for " + sym + " acknowledged and moved" + (mv?.newThreshold ? " to " + (mv.newThreshold.mode === "percent" ? L.signed(mv.newThreshold.value) + "%" : "$" + L.money(mv.newThreshold.value)) : "") + "."); poll();
-          return;
-        }
-        const body = { [which]: r ? { mode: r.mode, value: r.value } : null };
-        if (confirmed) body.confirm = true;
-        const res = await api("/api/stocks/" + encodeURIComponent(sym), { method: "PUT", body });
-        closeSheet();
-        toast(r ? R + " for " + sym + " saved: $" + L.money(r.price) + (res.rearmed?.length ? ". Re-armed " + res.rearmed.join(", ") + "." : ".") : R + " removed for " + sym + ".");
-        poll();
-      } catch (e) {
-        [save, remove, yes].forEach((b) => b && (b.disabled = false));
-        if (e instanceof ApiError && e.code === "CONFIRM_REQUIRED" && !opt.move) { showConfirm(); return; }
-        if (e instanceof NetError) err.textContent = "No connection. Nothing was changed.";
-        else if (e instanceof ApiError) err.textContent = e.message;
-        else throw e;
-      }
-    }
-    const main = h("div", {}, h("fieldset", { class: "field" }, h("legend", { text: "Enter it as" }), unitSeg),
-      h("div", { class: "field" }, lab, inp, h("p", { class: "sm", text: "Dollars are a price per share. Percent is signed from Previous Close, so a LOW is usually negative." })), prev, err,
-      h("div", { class: "dact" }, save, cancel, remove));
-    function showConfirm() { document.getElementById("cfP").textContent = R + " $" + L.money(last?.price ?? NaN) + " is already crossed by the latest price. An alert goes to Telegram now."; main.hidden = true; confirmBox.hidden = false; yes.focus(); }
-    const form = h("form", { novalidate: true, onsubmit: (ev) => {
-      ev.preventDefault();
-      calc();
-      if (!last) { if (!err.textContent) err.textContent = "Type a value first."; inp.focus(); return; }
-      if (last.crossed && !opt.move) showConfirm(); else doSave(last, false);
-    } }, main, confirmBox);
-    put(root, sheetTitle((opt.move ? "Acknowledge and move " : "Edit ") + R + " for " + sym),
-      h("p", { class: "sm", text: "Now: " + (cur ? L.thresholdText(cur, v.prev) : "not set") + " · Previous Close " + (Number.isFinite(v.prev) ? L.money(v.prev) : "n/a") + " · Last " + (Number.isFinite(v.last) ? L.money(v.last) : "n/a") }),
-      opt.move ? h("p", { class: "sm", text: "One step: the alert is acknowledged and the " + R + " moves 1% away. If the move is refused, the alert stays unacknowledged. Change the number if you want something else." }) : null, form);
-    calc();
-    inp.select();
-  });
-}
-function editVolume(sym) {
-  const v = getVM(sym);
-  if (!v) return;
-  let mode = v.vol?.mode || "multiple", last = null;
-  openSheet(sym + ":vol", (root) => {
-    const inp = h("input", { class: "in", id: "vVal", type: "text", inputmode: "decimal", autocomplete: "off", value: v.vol ? String(v.vol.value) : "", "aria-describedby": "vPrev vErr", autofocus: true });
-    const prev = h("div", { class: "preview", id: "vPrev", "aria-live": "polite" });
-    const err = h("p", { class: "err", id: "vErr", role: "alert" });
-    const save = h("button", { type: "submit", class: "btn pri", text: "Save" });
-    const remove = v.vol ? h("button", { type: "button", class: "btn danger", text: "Remove volume alert", onclick: () => doSave(null) }) : null;
-    function calc() {
-      const r = L.evalVolume({ mode, text: inp.value, cum: v.cumVolume });
-      last = r.state === "ok" ? r : null;
-      err.textContent = r.state === "error" ? r.err : "";
-      prev.textContent = r.state === "ok" ? r.preview : "Type a value to see what it means.";
-    }
     async function doSave(r) {
       save.disabled = true;
       try {
-        await api("/api/stocks/" + encodeURIComponent(sym), { method: "PUT", body: { volume: r ? { mode: r.mode, value: r.value } : null } });
-        closeSheet(); toast(r ? "Volume alert for " + sym + " saved." : "Volume alert removed for " + sym + "."); poll();
+        const vs = r.mode === "percent" ? r.value + "%" : String(r.value);
+        const mv = await api("/api/ack-move", { method: "POST", body: { symbol: sym, rule: rule.rule, cycle: rule.cycle, value: vs } });
+        closeSheet(); toast(R + " for " + sym + " acknowledged and moved" + (mv?.newThreshold ? " to " + (mv.newThreshold.mode === "percent" ? L.signed(mv.newThreshold.value) + "%" : "$" + L.money(mv.newThreshold.value)) : "") + "."); poll();
       } catch (e) {
         save.disabled = false;
         if (e instanceof NetError) err.textContent = "No connection. Nothing was changed.";
@@ -615,97 +763,159 @@ function editVolume(sym) {
         else throw e;
       }
     }
-    inp.addEventListener("input", calc);
-    const form = h("form", { novalidate: true, onsubmit: (ev) => { ev.preventDefault(); calc(); if (last) doSave(last); else inp.focus(); } },
-      h("fieldset", { class: "field" }, h("legend", { text: "Alert when IEX volume reaches" }), seg("vunit", [["multiple", "x the usual at this time"], ["absolute", "a number of shares"]], mode, (m) => { mode = m; calc(); inp.focus(); })),
-      h("div", { class: "field" }, h("label", { for: "vVal", text: "Value" }), inp), prev, err,
-      h("div", { class: "dact" }, save, h("button", { type: "button", class: "btn", text: "Cancel", onclick: closeSheet }), remove));
-    put(root, sheetTitle("Volume alert for " + sym), h("p", { class: "sm", text: "Volume is IEX volume only. Now: " + L.volumeText(v.vol) + " · so far " + L.compact(v.cumVolume) }), form);
-    calc(); inp.select();
+    const form = h("form", { novalidate: true, onsubmit: (ev) => {
+      ev.preventDefault(); calc();
+      if (!last) { if (!err.textContent) err.textContent = "Type a value first."; inp.focus(); return; }
+      doSave(last);
+    } },
+      h("fieldset", { class: "field" }, h("legend", { text: "Enter it as" }), unitSeg),
+      h("div", { class: "field" }, h("label", { for: "edVal", text: "New " + R }), inp, h("p", { class: "sm", text: "Dollars are a price per share. Percent is signed from Previous Close, so a LOW is usually negative." })), prev, err,
+      h("div", { class: "dact" }, save, h("button", { type: "button", class: "btn", text: "Cancel", onclick: cancelSheet })));
+    put(root, sheetTitle("Acknowledge and move " + R + " for " + sym),
+      h("p", { class: "sm", text: "Now: " + (cur ? L.thresholdText(cur, v.prev) : "not set") + " · Previous Close " + (Number.isFinite(v.prev) ? L.money(v.prev) : "n/a") + " · Last " + (Number.isFinite(v.last) ? L.money(v.last) : "n/a") }),
+      h("p", { class: "sm", text: "One step: the alert is acknowledged and the " + R + " moves 1% away. If the move is refused, the alert stays unacknowledged. Change the number if you want something else." }), form);
+    calc();
+    inp.select();
   });
 }
-function addSheet() {
+
+/* One form to add and edit a stock (step 3) */
+const UNIT_OPTS = [["dollar", "$ price"], ["percent", "% from Prev Close"]];
+function stockSheet(sym) {
+  const v = sym ? getVM(sym) : null;
+  if (sym && !v) return;
+  const ex = v?.stock;
   const d = S.data;
-  openSheet("add", (root) => {
-    const sym = h("input", { class: "in", id: "aSym", type: "text", autocomplete: "off", autocapitalize: "characters", spellcheck: "false", maxlength: "8", autofocus: true, required: true });
-    const lowIn = h("input", { class: "in", id: "aLow", type: "text", inputmode: "decimal", autocomplete: "off" });
-    const highIn = h("input", { class: "in", id: "aHigh", type: "text", inputmode: "decimal", autocomplete: "off" });
-    const lowU = h("select", { class: "in", id: "aLowU", "aria-label": "LOW unit" }, h("option", { value: "dollar", text: "$ price" }), h("option", { value: "percent", text: "% from Prev Close" }));
-    const highU = h("select", { class: "in", id: "aHighU", "aria-label": "HIGH unit" }, h("option", { value: "dollar", text: "$ price" }), h("option", { value: "percent", text: "% from Prev Close" }));
-    const err = h("p", { class: "err", role: "alert" });
-    const save = h("button", { type: "submit", class: "btn pri", text: "Add stock" });
-    const full = (d?.stocks?.length ?? 0) >= (d?.maxStocks ?? 30);
-    const form = h("form", { novalidate: true, onsubmit: async (ev) => {
-      ev.preventDefault(); err.textContent = "";
-      const symbol = sym.value.trim().toUpperCase();
-      if (!/^[A-Z0-9]{1,5}([.-][A-Z0-9])?$/.test(symbol)) { err.textContent = "Symbol: 1 to 5 letters or digits, for example NVDA or BRK.B."; sym.focus(); return; }
-      const body = { symbol };
-      for (const [which, i, u] of [["low", lowIn, lowU], ["high", highIn, highU]]) {
-        if (!i.value.trim()) continue;
-        const r = L.evalThreshold({ which, mode: u.value, text: i.value, prev: NaN, last: NaN });
-        if (u.value === "percent") {
-          const n = L.parseNum(i.value);
-          if (!Number.isFinite(n) || n <= -100 || n > 1000) { err.textContent = which.toUpperCase() + ": percent must be a number above -100 and at most 1000."; i.focus(); return; }
-          body[which] = { mode: "percent", value: n };
-        } else if (r.state !== "ok") { err.textContent = which.toUpperCase() + ": " + (r.err || "type a number."); i.focus(); return; }
-        else body[which] = { mode: "dollar", value: r.value };
-      }
-      save.disabled = true; save.textContent = "Checking the symbol ...";
+  const full = !v && (d?.stocks?.length ?? 0) >= (d?.maxStocks ?? 30);
+  openSheet(v ? sym + ":edit" : "add", (root) => {
+    let on = ex ? !ex.paused : true;
+    const sw = h("button", { type: "button", class: "sw", role: "switch", "aria-checked": on ? "true" : "false", "aria-label": "Alerts for this stock", onclick: () => { on = !on; sw.setAttribute("aria-checked", on ? "true" : "false"); } },
+      h("span", { text: "Alerts" }), h("span", { class: "t", "aria-hidden": "true" }));
+    const symIn = h("input", { class: "in", id: "sfSym", type: "text", autocomplete: "off", autocapitalize: "characters", spellcheck: "false", maxlength: "8", value: sym || "", readonly: !!v, autofocus: !v, placeholder: "NVDA" });
+    const sel = (id, label, opts, val) => { const s = h("select", { class: "in", id, "aria-label": label }, opts.map(([k, t]) => h("option", { value: k, text: t }))); s.value = val; return s; };
+    const lowIn = h("input", { class: "in", id: "sfLow", type: "text", inputmode: "decimal", autocomplete: "off", value: ex?.low ? String(ex.low.value) : "", "aria-describedby": "pvLow", autofocus: !!v });
+    const highIn = h("input", { class: "in", id: "sfHigh", type: "text", inputmode: "decimal", autocomplete: "off", value: ex?.high ? String(ex.high.value) : "", "aria-describedby": "pvHigh" });
+    const volIn = h("input", { class: "in", id: "sfVol", type: "text", inputmode: "decimal", autocomplete: "off", value: ex?.volume ? String(ex.volume.value) : "", "aria-describedby": "pvVol pvNote" });
+    const lowU = sel("sfLowU", "LOW unit", UNIT_OPTS, ex?.low?.mode || "dollar");
+    const highU = sel("sfHighU", "HIGH unit", UNIT_OPTS, ex?.high?.mode || "dollar");
+    const volU = sel("sfVolU", "Volume unit", [["multiple", "x usual at this time"], ["absolute", "shares"]], ex?.volume?.mode || "multiple");
+    const noteIn = h("textarea", { class: "in ta", id: "sfNote", maxlength: "200", rows: "2", value: ex?.notes || "" });
+    const pvLow = h("p", { class: "pv", id: "pvLow", "aria-live": "polite" });
+    const pvHigh = h("p", { class: "pv", id: "pvHigh", "aria-live": "polite" });
+    const pvVol = h("p", { class: "pv", id: "pvVol", "aria-live": "polite" });
+    const pvNote = h("p", { class: "pv note", id: "pvNote", "aria-live": "polite" });
+    const err = h("p", { class: "err", id: "sfErr", role: "alert" });
+    const save = h("button", { type: "submit", class: "btn pri", text: v ? "Save" : "Add stock" });
+    const cfP = h("p", { id: "cfP" });
+    const yes = h("button", { type: "button", class: "btn pri", text: "Yes, save and alert", onclick: () => doSave(pending, true) });
+    const no = h("button", { type: "button", class: "btn", text: "No, go back", onclick: () => { confirmBox.hidden = true; form.hidden = false; lowIn.focus(); } });
+    const confirmBox = h("div", { class: "confirm", hidden: true, role: "alertdialog", "aria-labelledby": "cfT" }, h("h3", { id: "cfT", text: "This will alert immediately. Save?" }), cfP, h("div", { class: "dact" }, yes, no));
+    let pending = null;
+    const read = () => ({ editing: !!v, existing: ex, symbol: symIn.value, on, low: { mode: lowU.value, text: lowIn.value }, high: { mode: highU.value, text: highIn.value }, vol: { mode: volU.value, text: volIn.value }, notes: noteIn.value, prev: v?.prev, last: v?.last, cum: v?.cumVolume });
+    function calc() {
+      const r = L.checkStockForm(read());
+      const line = (el, res, none, ok) => { el.textContent = res.state === "ok" ? ok : res.state === "error" ? res.err : none; el.classList.toggle("bad", res.state === "error"); };
+      line(pvLow, r.low, "No LOW alert", r.low.state === "ok" ? L.thresholdSentence("low", r.low, v?.prev) : "");
+      line(pvHigh, r.high, "No HIGH alert", r.high.state === "ok" ? L.thresholdSentence("high", r.high, v?.prev) : "");
+      line(pvVol, r.vol, "No volume alert", r.vol.state === "ok" ? L.volumeSentence(r.vol, v?.cumVolume) : "");
+      pvNote.textContent = r.vol.state === "ok" && r.vol.mode === "multiple" && L.usualVolumeWaits(!!v, v?.baseline) ? L.USUAL_VOLUME_NOTE : "";
+      return r;
+    }
+    const busy = (b) => { save.disabled = b; yes.disabled = b; save.textContent = b && !v ? "Checking the symbol ..." : v ? "Save" : "Add stock"; };
+    async function doSave(r, confirmed) {
+      busy(true); err.textContent = "";
+      const body = confirmed ? { ...r.body, confirm: true } : r.body;
       try {
-        await api("/api/stocks", { method: "POST", body });
-        closeSheet(); toast(symbol + " added."); poll();
+        const res = v ? await api("/api/stocks/" + encodeURIComponent(sym), { method: "PUT", body }) : await api("/api/stocks", { method: "POST", body });
+        closeSheet();
+        toast(v ? sym + " saved" + (res?.rearmed?.length ? ". Re-armed " + res.rearmed.join(", ") + "." : ".") : r.body.symbol + " added.");
+        poll();
       } catch (e) {
-        save.disabled = false; save.textContent = "Add stock";
-        if (e instanceof NetError) err.textContent = "No connection. Nothing was added.";
-        else if (e instanceof ApiError) err.textContent = e.message;
+        busy(false);
+        if (e instanceof ApiError && e.code === "CONFIRM_REQUIRED" && !confirmed) { askConfirm(r); return; }
+        if (e instanceof NetError) err.textContent = "No connection. Nothing was saved.";
+        else if (e instanceof ApiError) { if (![401, 429, 503].includes(e.status)) err.textContent = e.message; }
         else throw e;
       }
+    }
+    function askConfirm(r) {
+      pending = r;
+      cfP.textContent = "The latest price is already beyond a level you set, so an alert goes to Telegram now.";
+      form.hidden = true; confirmBox.hidden = false; yes.focus();
+    }
+    const form = h("form", { novalidate: true, onsubmit: (ev) => {
+      ev.preventDefault();
+      const r = calc();
+      if (r.err) {
+        err.textContent = r.err;
+        ({ symbol: symIn, low: lowIn, high: highIn, vol: volIn }[r.field] || symIn).focus();
+        return;
+      }
+      if (v && !r.changed) { closeSheet(); toast("No changes to save."); return; }
+      if (["low", "high"].some((k) => r[k].state === "ok" && r[k].crossed && r.body[k])) askConfirm(r); else doSave(r, false);
     } },
-      h("div", { class: "field" }, h("label", { for: "aSym", text: "Symbol" }), sym),
-      h("div", { class: "field" }, h("label", { for: "aLow", text: "LOW alert (optional)" }), h("div", { class: "toolbar" }, h("div", { class: "grow" }, lowIn), lowU)),
-      h("div", { class: "field" }, h("label", { for: "aHigh", text: "HIGH alert (optional)" }), h("div", { class: "toolbar" }, h("div", { class: "grow" }, highIn), highU)),
-      h("p", { class: "sm", text: "LOW must be below HIGH. The symbol is checked with the data source. Volume alerts can be added on the stock afterwards." }),
-      err, h("div", { class: "dact" }, save, h("button", { type: "button", class: "btn", text: "Cancel", onclick: closeSheet })));
-    put(root, sheetTitle("Add a stock"), full ? h("p", { class: "notice warn", text: "The watchlist is full (" + (d?.maxStocks ?? 30) + " stocks). Remove one first." }) : null, form);
+      h("div", { class: "field" }, h("label", { for: "sfSym", text: "Symbol" }), symIn),
+      h("div", { class: "field" }, h("label", { for: "sfLow", text: "LOW alert (optional)" }), h("div", { class: "frow" }, lowIn, lowU), pvLow),
+      h("div", { class: "field" }, h("label", { for: "sfHigh", text: "HIGH alert (optional)" }), h("div", { class: "frow" }, highIn, highU), pvHigh),
+      h("div", { class: "field" }, h("label", { for: "sfVol", text: "Volume alert (optional)" }), h("div", { class: "frow" }, volIn, volU), pvVol, pvNote),
+      h("div", { class: "field" }, h("label", { for: "sfNote", text: "Note (optional)" }), noteIn),
+      h("p", { class: "sm", text: "Set at least one of LOW, HIGH or Volume. LOW must be below HIGH." + (v ? "" : " The symbol is checked with the data source.") }),
+      err, h("div", { class: "dact" }, save, h("button", { type: "button", class: "btn", text: "Cancel", onclick: cancelSheet })));
+    form.addEventListener("input", () => { err.textContent = ""; calc(); });
+    form.addEventListener("change", () => calc());
+    put(root, h("div", { class: "shead" }, sheetTitle(v ? "Edit " + sym : "Add a stock"), sw),
+      full ? h("p", { class: "notice warn", text: "The watchlist is full (" + (d?.maxStocks ?? 30) + " stocks). Remove one first." }) : null, form, confirmBox);
     if (full) save.disabled = true;
+    calc();
   });
 }
 function muteSheet(v) {
-  const opts = [[30, "30 minutes"], [60, "1 hour"], [240, "4 hours"], [1440, "1 day"], [10080, "7 days"]];
-  openSheet(v.sym + ":more", (root) => {
+  const opts = [[30, "30 minutes"], [60, "1 hour"], [240, "4 hours"], [1440, "1 day"]];
+  openSheet(v.sym + ":mute", (root) => {
+    const err = h("p", { class: "err", role: "alert" });
+    const btns = opts.map(([m, t]) => h("button", { type: "button", class: "btn", text: t, onclick: () => sheetAct(() => api("/api/mute", { method: "POST", body: { symbol: v.sym, minutes: m } }), () => v.sym + " muted for " + t, err, btns) }));
     put(root, sheetTitle("Mute " + v.sym), h("p", { class: "sm", text: "No alerts or reminders for this stock until the time is up. Unmute any time." }),
-      h("div", { class: "cact" }, opts.map(([m, t]) => h("button", { type: "button", class: "btn", text: t, onclick: () => { closeSheet(); act(() => api("/api/mute", { method: "POST", body: { symbol: v.sym, minutes: m } }), () => v.sym + " muted for " + t); } }))),
-      h("div", { class: "dact" }, h("button", { type: "button", class: "btn", text: "Cancel", onclick: closeSheet })));
+      h("div", { class: "cact" }, btns), err,
+      h("div", { class: "dact" }, h("button", { type: "button", class: "btn", text: "Cancel", onclick: cancelSheet })));
   });
 }
-function pauseAllSheet() {
-  const paused = !!S.data?.pausedAll;
-  openSheet("pauseall", (root) => {
-    put(root, sheetTitle(paused ? "Resume all alerts?" : "Pause all alerts?"),
-      h("p", { text: paused ? "Alerts and reminders for every stock start again." : "No alerts or reminders will be sent for any stock until you resume. Use this only if you do not want to be disturbed." }),
-      h("div", { class: "dact" },
-        h("button", { type: "button", class: "btn pri", text: paused ? "Yes, resume all" : "Yes, pause all", onclick: () => { closeSheet(); act(() => api("/api/pause-all", { method: "POST", body: { paused: !paused } }), () => (paused ? "All alerts resumed." : "All alerts paused.")); } }),
-        h("button", { type: "button", class: "btn", text: "Cancel", onclick: closeSheet })));
+function moreSheet() {
+  openSheet("more", (root) => {
+    const err = h("p", { class: "err", role: "alert" });
+    const test = h("button", { type: "button", class: "btn", text: "Send test alert", onclick: () => sheetAct(() => api("/api/test", { method: "POST", body: {} }), () => "Test alert sent to Telegram.", err, [test]) });
+    put(root, sheetTitle("More"),
+      h("div", { class: "cact stackc" }, S.canDisableAll ? h("button", { type: "button", class: "btn", text: "Disable all alerts", onclick: disableAllSheet }) : null, test), err,
+      h("div", { class: "dact" }, h("button", { type: "button", class: "btn", text: "Close", onclick: cancelSheet })));
+  });
+}
+function disableAllSheet() {
+  openSheet("more", (root) => {
+    const err = h("p", { class: "err", role: "alert" });
+    const yes = h("button", { type: "button", class: "btn pri", text: "Yes, disable all", onclick: () => sheetAct(() => api("/api/pause-all", { method: "POST", body: { paused: true } }), () => "All alerts are off.", err, [yes]) });
+    put(root, sheetTitle("Disable all alerts?"),
+      h("p", { text: "No alerts or reminders will be sent for any stock. You turn stocks back on one by one, with the Alerts switch on each card." }), err,
+      h("div", { class: "dact" }, yes, h("button", { type: "button", class: "btn", text: "Cancel", onclick: cancelSheet })));
   });
 }
 function removeSheet(v) {
-  openSheet(v.sym + ":more", (root) => {
-    put(root, sheetTitle("Remove " + v.sym + "?"), h("p", { text: "This stops all alerts for " + v.sym + " and deletes its LOW, HIGH and volume settings. It cannot be undone, but you can add the stock again." }),
-      h("div", { class: "dact" },
-        h("button", { type: "button", class: "btn danger", text: "Yes, remove " + v.sym, onclick: () => { closeSheet(); act(() => api("/api/stocks/" + encodeURIComponent(v.sym), { method: "DELETE" }), () => v.sym + " removed"); } }),
-        h("button", { type: "button", class: "btn", text: "No, keep it", onclick: closeSheet })));
+  openSheet(v.sym + ":remove", (root) => {
+    const err = h("p", { class: "err", role: "alert" });
+    const yes = h("button", { type: "button", class: "btn danger", text: "Yes, remove " + v.sym, onclick: () => sheetAct(() => api("/api/stocks/" + encodeURIComponent(v.sym), { method: "DELETE" }), () => v.sym + " removed", err, [yes]) });
+    put(root, sheetTitle("Remove " + v.sym + "?"), h("p", { text: "This stops all alerts for " + v.sym + " and deletes its LOW, HIGH and volume settings. It cannot be undone, but you can add the stock again." }), err,
+      h("div", { class: "dact" }, yes, h("button", { type: "button", class: "btn", text: "No, keep it", onclick: cancelSheet })));
   });
 }
 function ackAllSheet() {
   const n = activeRules().length;
   if (!n) return;
   openSheet("ackall", (root) => {
-    put(root, sheetTitle("Acknowledge all?"), h("p", { text: n + " unacknowledged alert" + (n === 1 ? "" : "s") + " will be acknowledged and stop repeating." }),
-      h("div", { class: "dact" },
-        h("button", { type: "button", class: "btn pri", text: "Yes, acknowledge all", onclick: () => { closeSheet(); act(() => api("/api/ack", { method: "POST", body: { all: true } }), (r) => "Acknowledged " + r.acknowledged + " alert" + (r.acknowledged === 1 ? "" : "s")); } }),
-        h("button", { type: "button", class: "btn", text: "Cancel", onclick: closeSheet })));
+    const err = h("p", { class: "err", role: "alert" });
+    const yes = h("button", { type: "button", class: "btn pri", text: "Yes, acknowledge all", onclick: () => sheetAct(() => api("/api/ack", { method: "POST", body: { all: true } }), (r) => "Acknowledged " + r.acknowledged + " alert" + (r.acknowledged === 1 ? "" : "s"), err, [yes]) });
+    put(root, sheetTitle("Acknowledge all?"), h("p", { text: n + " unacknowledged alert" + (n === 1 ? "" : "s") + " will be acknowledged and stop repeating." }), err,
+      h("div", { class: "dact" }, yes, h("button", { type: "button", class: "btn", text: "Cancel", onclick: cancelSheet })));
   });
 }
+
 
 /* ------------------------------------------------------------ ALERTS */
 async function loadHistory() {
@@ -729,7 +939,7 @@ function alertRow(r, v) {
       ? h("div", { class: "sm", text: "Reminders sent: " + (r.remindersSent || 0) + (Number.isFinite(r.nextReminderMs) ? " · next " + L.both(r.nextReminderMs) : "") })
       : h("div", { class: "sm", text: Number.isFinite(r.ackMs) ? "Acknowledged " + L.both(r.ackMs) + (r.ackBy ? " by " + r.ackBy : "") : "" }),
     L.isActiveRule(r) ? h("div", { class: "cact" }, h("button", { type: "button", class: "btn pri", text: "Acknowledge " + R + " " + r.symbol, "data-fk": "al:" + r.symbol + r.rule, onclick: () => act(() => api("/api/ack", { method: "POST", body: { symbol: r.symbol, rule: r.rule, cycle: r.cycle } }), () => "Acknowledged " + r.symbol + " " + R) }),
-      v && (R === "HIGH" || R === "LOW") ? h("button", { type: "button", class: "btn", text: "Ack + move…", onclick: () => editThreshold(r.symbol, R.toLowerCase(), { move: r }) }) : null) : null);
+      v && (R === "HIGH" || R === "LOW") ? h("button", { type: "button", class: "btn", text: "Ack + move…", onclick: () => ackMoveSheet(r.symbol, R.toLowerCase(), r) }) : null) : null);
 }
 function alertsTab(root) {
   const unack = h("section", { class: "panel" });
@@ -869,7 +1079,7 @@ function backupPanel() {
       h("p", { text: "The file holds " + j.stocks.length + " stock" + (j.stocks.length === 1 ? "" : "s") + " and the settings. Importing replaces your current watchlist, thresholds and settings." }),
       h("div", { class: "dact" },
         h("button", { type: "button", class: "btn danger", text: "Yes, replace everything", onclick: () => { closeSheet(); act(() => api("/api/import", { method: "POST", body: j }), (r) => "Imported " + r.stocks + " stocks."); } }),
-        h("button", { type: "button", class: "btn", text: "Cancel", onclick: closeSheet }))));
+        h("button", { type: "button", class: "btn", text: "Cancel", onclick: cancelSheet }))));
   });
   return h("section", { class: "panel" }, h("h2", { text: "Backup" }), h("p", { class: "sm", text: "Watchlist, thresholds and settings as a JSON file. The access code and other secrets are never in it." }),
     h("div", { class: "cact" },
@@ -889,7 +1099,7 @@ function displayPanel() {
     h("div", { class: "field" }, h("label", { for: "theme", text: "Theme" }), sel),
     h("p", { class: "sm", text: "The access code is stored only on this phone. Forgetting it signs this phone out." }),
     h("div", { class: "cact" }, h("button", { type: "button", class: "btn danger", text: "Forget code on this phone", onclick: () => openSheet("", (root) => put(root, sheetTitle("Forget the access code?"), h("p", { text: "You will need to type the code again to open the dashboard." }),
-      h("div", { class: "dact" }, h("button", { type: "button", class: "btn danger", text: "Yes, forget it", onclick: () => { closeSheet(); forgetCode(); } }), h("button", { type: "button", class: "btn", text: "Cancel", onclick: closeSheet })))) })));
+      h("div", { class: "dact" }, h("button", { type: "button", class: "btn danger", text: "Yes, forget it", onclick: () => { closeSheet(); forgetCode(); } }), h("button", { type: "button", class: "btn", text: "Cancel", onclick: cancelSheet })))) })));
 }
 function applyTheme() {
   const t = store.get("mm.theme");

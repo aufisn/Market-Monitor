@@ -111,7 +111,7 @@ const STOCK_KEYS = ["symbol", "enabled", "high", "low", "volume", "mutedUntilMs"
  * Merge a patch onto `existing` (or build new) and validate. `null` clears an
  * optional field. Control fields like `confirm` are handled by the caller.
  */
-export function validateStockInput(body: unknown, existing?: StockConfig): StockConfig {
+export function validateStockInput(body: unknown, existing?: StockConfig, opts: { allowNoAlert?: boolean } = {}): StockConfig {
   if (!isObj(body)) return bad("body", "must be an object");
   onlyKeys(body, [...STOCK_KEYS, "confirm"], "stock");
   const symbol = existing ? existing.symbol : validateSymbol(body.symbol);
@@ -150,6 +150,13 @@ export function validateStockInput(body: unknown, existing?: StockConfig): Stock
   if (body.overrides !== undefined) {
     if (body.overrides === null) delete out.overrides;
     else out.overrides = validateSettingsPartial(body.overrides, "overrides");
+  }
+  // At least one alert (LOW, HIGH or Volume). Import may carry older stocks without one (opts.allowNoAlert).
+  // A legacy stock that already has none can still change notes/enabled/paused; touching the rules is checked.
+  const has = (c?: StockConfig) => !!(c?.high || c?.low || c?.volume);
+  const touched = ["high", "low", "volume"].some((k) => body[k] !== undefined);
+  if (!opts.allowNoAlert && !has(out) && (!existing || has(existing) || touched)) {
+    throw new ApiError(422, "NO_ALERT", "Set at least one alert: LOW, HIGH or Volume.");
   }
   return out;
 }

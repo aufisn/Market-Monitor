@@ -2,7 +2,7 @@
    and a mock of the /api contract (src/worker/api.ts). Not part of the deployed app.
    Run:  node test/ui/serve.mjs   (port 8799)  then open http://127.0.0.1:8799/
    Access code for the mock: set MOCK_CODE, default is printed at start-up.
-   Switch scenarios while running:  /mock/scenario?name=normal|closed|empty|delayed|locked|unconfigured|nomarket|slow */
+   Switch scenarios while running:  /mock/scenario?name=normal|closed|empty|delayed|locked|unconfigured|nomarket|slow|failswitch (PLTR switch fails with 500) */
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
@@ -24,7 +24,6 @@ const MIME = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; cha
 // ---- mock data
 const MIN = 60000;
 let scenario = "normal";
-let pausedAll = false;
 const T0 = Date.now();
 const mk = (symbol, o) => ({ symbol, enabled: true, ...o });
 const stocks = [
@@ -56,7 +55,7 @@ let log = Array.from({ length: 40 }, (_, i) => ({ tMs: T0 - i * 7 * MIN, kind: [
 
 function state() {
   const now = Date.now();
-  const body = { version: "0.1.0", serverTimeMs: now, date: "2026-11-24", maxStocks: 30, settings, stocks: scenario === "empty" ? [] : stocks, market: scenario === "empty" ? [] : market(), rules: scenario === "empty" ? [] : rules, pausedAll, counters: { polls: 214, alpaca_calls: 214, telegram_sent: 7 }, lastPollMs: scenario === "delayed" ? now - 200000 : now - 12000 };
+  const body = { version: "0.1.0", serverTimeMs: now, date: "2026-11-24", maxStocks: 30, settings, stocks: scenario === "empty" ? [] : stocks, market: scenario === "empty" ? [] : market(), rules: scenario === "empty" ? [] : rules, pausedAll: stocks.length > 0 && stocks.every((x) => x.paused), counters: { polls: 214, alpaca_calls: 214, telegram_sent: 7 }, lastPollMs: scenario === "delayed" ? now - 200000 : now - 12000 };
   // Optional field the dashboard can use when the server sends it (see report: API gap). "nomarket" tests the clock fallback.
   if (scenario === "closed") body.marketStatus = { status: "CLOSED", reason: "weekend", opensMs: now + 41 * 3600000, calendarValidUntil: "2027-12-31" };
   else if (scenario !== "nomarket") body.marketStatus = { status: "OPEN", closesMs: now + 5.3 * 3600000, calendarValidUntil: "2027-12-31" };
@@ -82,7 +81,8 @@ async function api(req, res, url) {
     const b = await body(req);
     if (stocks.find((s) => s.symbol === b.symbol)) return J(res, 409, { error: "DUPLICATE", message: b.symbol + " is already on the watchlist." });
     if (b.symbol === "ZZZZ") return J(res, 422, { error: "UNKNOWN_SYMBOL", message: "ZZZZ was not found in the data source." });
-    stocks.push({ symbol: b.symbol, enabled: true, ...(b.high ? { high: b.high } : {}), ...(b.low ? { low: b.low } : {}) });
+    if (!b.high && !b.low && !b.volume) return J(res, 422, { error: "INVALID_INPUT", message: "Set at least one of LOW, HIGH or volume." });
+    stocks.push({ symbol: b.symbol, enabled: true, ...(b.high ? { high: b.high } : {}), ...(b.low ? { low: b.low } : {}), ...(b.volume ? { volume: b.volume } : {}), ...(b.notes ? { notes: b.notes } : {}), ...(b.paused ? { paused: true } : {}) });
     return J(res, 201, { stock: stocks.at(-1) });
   }
   let sm = /^\/api\/stocks\/([^/]+)$/.exec(p);
@@ -95,6 +95,8 @@ async function api(req, res, url) {
     const next = { ...stocks[i] };
     for (const k of ["high", "low", "volume"]) if (b[k] !== undefined) { if (b[k] === null) delete next[k]; else next[k] = b[k]; }
     if (b.paused !== undefined) next.paused = b.paused;
+    if (b.notes !== undefined) { if (b.notes === null || b.notes === "") delete next.notes; else next.notes = b.notes; }
+    if (sym === "PLTR" && b.paused !== undefined && scenario === "failswitch") return J(res, 500, { error: "INTERNAL", message: "Something went wrong on the server." });
     const prev = px[sym]?.[1], last = px[sym]?.[0];
     const hi = resolve(next.high, prev), lo = resolve(next.low, prev);
     if (hi !== undefined && lo !== undefined && lo >= hi) return J(res, 422, { error: "LOW_NOT_BELOW_HIGH", message: "LOW must be below HIGH" });
@@ -132,7 +134,7 @@ async function api(req, res, url) {
     if (url.searchParams.get("format") === "csv") { res.writeHead(200, { "content-type": "text/csv; charset=utf-8", "cache-control": "no-store", "content-disposition": 'attachment; filename="market-monitor-log.csv"' }); return res.end("time_utc,kind,symbol,rule,detail\n" + rows.map((r) => [new Date(r.tMs).toISOString(), r.kind, r.symbol || "", r.rule || "", JSON.stringify(r.detail)].join(",")).join("\n") + "\n"); }
     return J(res, 200, { log: rows });
   }
-  if (p === "/api/pause-all" && m === "POST") { pausedAll = (await body(req)).paused === true; return J(res, 200, { ok: true, pausedAll }); }
+  if (p === "/api/pause-all" && m === "POST") { const on = (await body(req)).paused === true; for (const x of stocks) x.paused = on; return J(res, 200, { ok: true, paused: on, changed: stocks.length }); }
   if (p === "/api/why") {
     const sym = url.searchParams.get("symbol"), t = url.searchParams.get("t");
     if (!sym || !/^\d{2}:\d{2}$/.test(t || "")) return J(res, 400, { error: "INVALID_INPUT", message: "t: use HH:MM" });
@@ -159,7 +161,7 @@ async function api(req, res, url) {
 http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://x");
   try {
-    if (url.pathname === "/mock/scenario") { scenario = url.searchParams.get("name") || "normal"; rules = initialRules(); pausedAll = false; res.writeHead(200, { "content-type": "text/plain" }); return res.end("scenario=" + scenario); }
+    if (url.pathname === "/mock/scenario") { scenario = url.searchParams.get("name") || "normal"; rules = initialRules(); for (const x of stocks) delete x.paused; res.writeHead(200, { "content-type": "text/plain" }); return res.end("scenario=" + scenario); }
     if (url.pathname.startsWith("/api/")) return await api(req, res, url);
     let rel = decodeURIComponent(url.pathname);
     if (rel.endsWith("/")) rel += "index.html";
