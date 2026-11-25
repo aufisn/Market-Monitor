@@ -11,10 +11,11 @@ import type { Session } from "./calendar";
 import { EOD_AFTER_CLOSE_MS, EOD_FINAL_AFTER_CLOSE_MS, EOD_PARTIAL_AFTER_CLOSE_MS, buildEodStocks, chunkEod, eodWindow, hasOfficialToday } from "./eod";
 import { gapWindow, scanGap } from "./gapscan";
 import type { GapRule } from "./gapscan";
-import { EVENT_PRIORITY } from "./ports";
-import type { Bar, Baseline, EodSummary, MarketData, MarketState, OutboundEvent, RuleState, Settings, Snapshot, StockConfig, Store, TradingDate } from "./ports";
+import { EVENT_PRIORITY, priceSide } from "./ports";
+import type { Bar, Baseline, EodSummary, MarketData, MarketState, OutboundEvent, RuleKind, RuleState, Settings, Snapshot, StockConfig, Store, TradingDate, YearRange } from "./ports";
 import { evaluatePrice, evaluateVolume, isFlaggedTrade, priceInsideBuffer, resolveThreshold, volumeInsideBuffer } from "./rules";
 import { MIN, nyDate, nyParts } from "./time";
+import { W52_PER_RUN_PRE_OPEN, W52_PER_RUN_SESSION, buildYearRange, high52Threshold, low52Threshold, needYearRange, yearWindow } from "./yearrange";
 
 export interface Ports {
   store: Store;
@@ -44,6 +45,8 @@ const READY_BEFORE_OPEN_MS = 30 * MIN; // 09:00 ET
 const PRE_OPEN_WINDOW_MS = 150 * MIN; // 07:00 ET
 const POST_CLOSE_WINDOW_MS = 60 * MIN; // closing() works until here; the end-of-day summary is built inside it
 const PREV_CLOSE_PER_RUN = 12;
+type PriceRule = "HIGH" | "LOW" | "HIGH52" | "LOW52";
+const PRICE_RULES: readonly PriceRule[] = ["HIGH", "LOW", "HIGH52", "LOW52"];
 
 // ------------------------------------------------------------ call metering
 interface Meter {
@@ -80,6 +83,20 @@ async function loadBaselines(store: Store, stocks: StockConfig[], m: Meter): Pro
       const b = await store.getBaseline(s.symbol);
       if (b) out.set(s.symbol, b);
     }
+  }
+  return out;
+}
+
+/** 52-week ranges for `need` in ONE call (split-adjusted official bars). Empty map when unsupported or failed. */
+async function fetchYearRanges(market: MarketData, need: StockConfig[], date: TradingDate): Promise<Map<string, YearRange>> {
+  const out = new Map<string, YearRange>();
+  if (!need.length || !market.officialDailyBars) return out;
+  try {
+    const w = yearWindow(date);
+    const bars = await market.officialDailyBars(need.map((s) => s.symbol), w.startMs, w.endMs, { splitAdjusted: true });
+    for (const s of need) out.set(s.symbol, buildYearRange(date, bars[s.symbol]));
+  } catch {
+    /* retried on a later run; the 52-week rules simply wait */
   }
   return out;
 }
@@ -188,6 +205,8 @@ async function tick(
   // --- Previous Close for stocks that lack it (late additions); capped per run
   const missingPrev = active.filter((s) => !stored.get(s.symbol)?.prev && snaps[s.symbol]).slice(0, 3);
   const prevs = await Promise.all(missingPrev.map((s) => market.previousDaily(s.symbol, date).catch(() => null)));
+  // --- 52-week range for stocks added during the day (normally built before the open)
+  const w52s = await fetchYearRanges(market, needYearRange(active.filter((s) => snaps[s.symbol]), stored, date, W52_PER_RUN_SESSION), date);
 
   // --- fold snapshots into market states
   const mem = new Map<string, MarketState>();
@@ -201,11 +220,13 @@ async function tick(
     }
     m.polled++;
     const ref = prevs[missingPrev.indexOf(s)];
-    const base = ref ? { ...(old ?? { symbol: s.symbol, date }), prev: ref } : old;
+    const w52 = w52s.get(s.symbol);
+    let base = ref ? { ...(old ?? { symbol: s.symbol, date }), prev: ref } : old;
+    if (w52) base = { ...(base ?? { symbol: s.symbol, date }), w52 };
     const ms = refresh(base, s.symbol, date, snap, nowMs);
     mem.set(s.symbol, ms);
-    const due = !old?.lastPollMs || nowMs - old.lastPollMs >= MARKET_WRITE_EVERY_MS || !!ref;
-    if (due && sig(ms) !== sig(old)) toWrite.push(ms);
+    const due = !old?.lastPollMs || nowMs - old.lastPollMs >= MARKET_WRITE_EVERY_MS || !!ref || !!w52;
+    if (due && (sig(ms) !== sig(old) || !!w52)) toWrite.push(ms);
   });
 
   // --- baselines (only if a volume rule exists)
@@ -215,7 +236,14 @@ async function tick(
 
   // --- thresholds for this run
   const prevClose = (sym: string) => mem.get(sym)?.prev?.close;
-  const priceThr = (s: StockConfig, kind: "HIGH" | "LOW") => resolveThreshold(kind === "HIGH" ? s.high : s.low, prevClose(s.symbol));
+  const priceThr = (s: StockConfig, kind: PriceRule): number | undefined => {
+    if (kind === "HIGH52" || kind === "LOW52") {
+      if (!s.range52) return undefined;
+      const w = mem.get(s.symbol)?.w52;
+      return w?.date === date ? (kind === "HIGH52" ? high52Threshold(w) : low52Threshold(w)) : undefined;
+    }
+    return resolveThreshold(kind === "HIGH" ? s.high : s.low, prevClose(s.symbol));
+  };
   const liveStocks = active.filter((s) => !quiet(s, nowMs) && mem.has(s.symbol));
 
   // --- gap scan (FR-9) BEFORE the normal evaluation, so late alerts own the rule first
@@ -223,7 +251,7 @@ async function tick(
   if (win && canSpend()) {
     const rules: GapRule[] = [];
     for (const s of liveStocks) {
-      for (const kind of ["HIGH", "LOW"] as const) {
+      for (const kind of PRICE_RULES) {
         const thr = priceThr(s, kind);
         if (thr !== undefined) rules.push({ symbol: s.symbol, rule: kind, threshold: thr, state: rs.get(ruleKey(s.symbol, kind)) });
       }
@@ -256,17 +284,18 @@ async function tick(
     const ms = mem.get(s.symbol)!;
     const snap = snaps[s.symbol]!;
     const set = settingsFor(s.symbol);
-    const rules: { kind: "HIGH" | "LOW" | "VOLUME"; thr?: number; crossing: ReturnType<typeof evaluatePrice>["crossing"]; inside: boolean; held: number | null; back: boolean }[] = [];
-    for (const kind of ["HIGH", "LOW"] as const) {
+    const rules: { kind: RuleKind; thr?: number; crossing: ReturnType<typeof evaluatePrice>["crossing"]; inside: boolean; held: number | null; back: boolean }[] = [];
+    for (const kind of PRICE_RULES) {
       const thr = priceThr(s, kind);
       if (thr === undefined) continue;
+      const side = priceSide(kind)!;
       const cur = rs.get(ruleKey(s.symbol, kind));
-      const ev = evaluatePrice(kind, thr, snap, { sessionOpenMs: session.open, recentCloses: stored.get(s.symbol)?.recentMinuteCloses, spikeHoldPct: set.spikeHoldPct, heldPrice: cur?.heldPrice });
+      const ev = evaluatePrice(side, thr, snap, { sessionOpenMs: session.open, recentCloses: stored.get(s.symbol)?.recentMinuteCloses, spikeHoldPct: set.spikeHoldPct, heldPrice: cur?.heldPrice });
       const lp = ev.lastPrice;
       rules.push({
         kind, thr, crossing: ev.crossing, held: ev.held,
-        inside: priceInsideBuffer(kind, lp, thr, set.rearmBufferPricePct),
-        back: lp !== undefined && (kind === "HIGH" ? lp < thr : lp > thr),
+        inside: priceInsideBuffer(side, lp, thr, set.rearmBufferPricePct),
+        back: lp !== undefined && (side === "HIGH" ? lp < thr : lp > thr),
       });
     }
     if (s.volume) {
@@ -444,6 +473,15 @@ export async function runPreOpen(ports: Ports, nowMs: number, opts: TickOptions 
       ms.set(s.symbol, next);
       fresh.push(next);
     });
+    // 52-week ranges, once per day, ten stocks per call
+    const yr = await fetchYearRanges(market, needYearRange(active, ms, date, CALL_BUDGET - TAIL - 6 - m.calls > 0 ? W52_PER_RUN_PRE_OPEN : 0), date);
+    for (const [sym, w52] of yr) {
+      const next = { ...(ms.get(sym) ?? { symbol: sym, date }), w52 };
+      ms.set(sym, next);
+      const i = fresh.findIndex((x) => x.symbol === sym);
+      if (i >= 0) fresh[i] = next;
+      else fresh.push(next);
+    }
     if (fresh.length) await store.putMarketStates(fresh);
 
     // One baseline per run (FR-6.2)

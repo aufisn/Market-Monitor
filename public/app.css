@@ -256,3 +256,14 @@ input[readonly] { background: var(--surface2); border-style: dashed; color: var(
 .dist { font-size: .8rem; }
 .prow .big { font-size: 1.5rem; }
 @media (max-width: 47.49rem) { .card { gap: .3rem; } .gblk { gap: .2rem; } .stchip .chip { padding: .05rem .5rem; } }
+
+/* 52-week range (card) */
+.r52 { margin: .35rem 0 .2rem; }
+.r52h { display: flex; justify-content: space-between; gap: var(--s2); font-size: .78rem; color: var(--muted); }
+.r52s.on { color: var(--text); font-weight: 700; }
+.r52bar { position: relative; height: 1.2rem; margin: 0 .5rem; }
+.r52bar .track { position: absolute; left: 0; right: 0; top: .45rem; height: .35rem; border-radius: .2rem; background: var(--surface2); border: 1px solid var(--muted); }
+.r52bar .m { position: absolute; top: .05rem; transform: translateX(-50%); font-size: .9rem; line-height: 1; color: var(--accent); }
+.r52bar .m.beyond { color: var(--bad); }
+.r52l { display: flex; justify-content: space-between; font-size: .72rem; color: var(--muted); }
+.field .lbl { display: block; font-weight: 700; font-size: .9rem; }

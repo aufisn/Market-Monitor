@@ -34,7 +34,7 @@ export async function readPendingMove(ctx: Ctx): Promise<PendingMove | null> {
 }
 
 const stripKeyboard = (ctx: Ctx, id: number | undefined): Promise<void> => (id ? ctx.telegram.editMessageReplyMarkup(id, null).catch(() => undefined) : Promise.resolve());
-const isPrice = (r: RuleKind): r is "HIGH" | "LOW" => r !== "VOLUME";
+const isPrice = (r: RuleKind): r is "HIGH" | "LOW" => r === "HIGH" || r === "LOW";
 
 export async function handleButton(ctx: Ctx, action: CallbackAction, msgId: number | undefined): Promise<string> {
   const now = ctx.now();
@@ -75,7 +75,7 @@ export async function handleButton(ctx: Ctx, action: CallbackAction, msgId: numb
       return parts.length ? "Details sent" : "No briefing data";
     }
     case "chooser": {
-      if (!isPrice(action.rule)) return "No move for volume alerts";
+      if (!isPrice(action.rule)) return "No move for this alert";
       const st = await ctx.store.getRuleState(date, action.symbol, action.rule);
       if (!st || !isActive(st) || st.cycle !== action.cycle) {
         await stripKeyboard(ctx, msgId);
@@ -92,7 +92,7 @@ export async function handleButton(ctx: Ctx, action: CallbackAction, msgId: numb
       return "Cancelled";
     }
     case "typed": {
-      if (!isPrice(action.rule)) return "No move for volume alerts";
+      if (!isPrice(action.rule)) return "No move for this alert";
       const st = await ctx.store.getRuleState(date, action.symbol, action.rule);
       if (!st || !isActive(st) || st.cycle !== action.cycle) {
         await stripKeyboard(ctx, msgId);
@@ -105,7 +105,7 @@ export async function handleButton(ctx: Ctx, action: CallbackAction, msgId: numb
       return "Reply with the new value";
     }
     case "ackmove": {
-      if (!isPrice(action.rule)) return "No move for volume alerts";
+      if (!isPrice(action.rule)) return "No move for this alert";
       const r = await ackAndMove(ctx, action.symbol, action.rule, { pct: action.pct }, { cycle: action.cycle, messageId: msgId });
       if (!r.ok && r.kind === "STALE") await stripKeyboard(ctx, msgId);
       return r.ok ? `${action.rule} moved to ${f2(r.to)}` : r.reason.slice(0, 190);

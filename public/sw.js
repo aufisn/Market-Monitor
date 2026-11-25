@@ -1,5 +1,5 @@
 /* Service worker: caches the app shell only (FR-8.11). It never caches or answers /api, /tg or /health. */
-const CACHE = "mm-shell-v2";
+const CACHE = "mm-shell-v3";
 const SHELL = ["./", "index.html", "app.css", "app.js", "lib.js", "manifest.webmanifest", "icons/icon.svg", "icons/icon-192.png", "icons/icon-512.png"];
 
 const SHELL_PATHS = new Set(SHELL.map((s) => new URL(s, self.registration.scope).pathname));

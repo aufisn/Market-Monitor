@@ -18,6 +18,14 @@ const NVDA = stock("NVDA", { close: 140.85, prevClose: 135.4, open: 136.1, low: 
 const AMZN = stock("AMZN", { alertsOff: true, close: 201.05, prevClose: 201.85, open: 202.3, low: 200.7, high: 203.1, volume: 38_900_000, avgVolume: 38_900_000 / 0.8 });
 
 describe("end-of-day summary layout", () => {
+  it("adds the 52-week range line, marks a new 52-week high, labels 52W alerts", () => {
+    const X = stock("NVDA", { ...NVDA, w52High: 141.3, w52Low: 86.62, newHigh52: true, alerts: [A("HIGH52", "15:21", true)] });
+    const [r] = render([X]);
+    expect(r!.text).toContain("52W 86.62 – 141.30 · new 52W high");
+    expect(r!.text).toContain("🔔 52W HIGH 15:21 ET · ack'd");
+    expect(widest(r!.text)).toBeLessThanOrEqual(38);
+    expect(render([TSLA])[0]!.text).not.toContain("52W");
+  });
   it("matches the mock-up: header, counts, blocks, footer, one silent message", () => {
     const [r, ...more] = render([TSLA, NVDA, AMZN]);
     expect(more).toHaveLength(0);

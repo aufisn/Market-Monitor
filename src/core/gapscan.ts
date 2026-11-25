@@ -2,6 +2,7 @@
  * Missed-run catch-up (FR-9). Price rules only: cumulative volume cannot be
  * missed (it only grows), so the normal poll after a gap catches a volume crossing.
  */
+import { priceSide } from "./ports";
 import type { Bar, RuleKind, RuleState } from "./ports";
 import { isSpike } from "./rules";
 import { MIN } from "./time";
@@ -19,7 +20,7 @@ export function gapWindow(lastPollMs: number | null, nowMs: number, openMs: numb
 
 export interface GapRule {
   symbol: string;
-  rule: "HIGH" | "LOW";
+  rule: RuleKind; // a price rule: HIGH, LOW, HIGH52 or LOW52
   threshold: number;
   state?: RuleState; // missing = never evaluated = ARMED
 }
@@ -40,8 +41,9 @@ export function scanGap(rules: GapRule[], bars: Record<string, Bar[]>, spikeHold
   for (const r of rules) {
     if (r.state && r.state.state !== "ARMED") continue;
     const list = [...(bars[r.symbol] ?? [])].sort((a, b) => a.t - b.t);
-    const val = (b: Bar) => (r.rule === "HIGH" ? b.h : b.l);
-    const crossed = (b: Bar) => (r.rule === "HIGH" ? b.h >= r.threshold : b.l <= r.threshold);
+    const up = priceSide(r.rule) === "HIGH";
+    const val = (b: Bar) => (up ? b.h : b.l);
+    const crossed = (b: Bar) => (up ? b.h >= r.threshold : b.l <= r.threshold);
     const closes = [...(seedCloses[r.symbol] ?? [])];
     for (let i = 0; i < list.length; i++) {
       const b = list[i]!;

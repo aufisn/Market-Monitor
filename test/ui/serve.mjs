@@ -31,7 +31,7 @@ const stocks = [
   mk("JPM", { high: { mode: "percent", value: 5 }, low: { mode: "percent", value: -5 } }),
   mk("TSLA", { high: { mode: "dollar", value: 260 }, low: { mode: "dollar", value: 225 }, volume: { mode: "absolute", value: 30000000 } }),
   mk("AMZN", { high: { mode: "dollar", value: 190 }, low: { mode: "dollar", value: 170 } }),
-  mk("NVDA", { high: { mode: "dollar", value: 145 }, low: { mode: "dollar", value: 130 }, volume: { mode: "multiple", value: 2 } }),
+  mk("NVDA", { high: { mode: "dollar", value: 145 }, low: { mode: "dollar", value: 130 }, volume: { mode: "multiple", value: 2 }, range52: true }),
   mk("MSFT", { high: { mode: "dollar", value: 435 }, low: { mode: "dollar", value: 420 } }),
   mk("XOM", { high: { mode: "dollar", value: 118 }, low: { mode: "dollar", value: 104 } }),
   mk("GOOGL", { high: { mode: "dollar", value: 185 }, low: { mode: "dollar", value: 165 } }),
@@ -42,6 +42,7 @@ const px = { PENNY: [0.4213, 0.4100, 0.4150, 10, 3e6],  AAPL: [190.2, 189.5, 189
 const market = () => Object.entries(px).map(([symbol, [last, prev, open, age, vol]]) => ({
   symbol, date: "2026-11-24", last: { t: Date.now() - age * 1000 * (scenario === "delayed" ? 1 : 1), p: last, s: 100 }, open, dayHigh: Math.max(last, open) + 0.6, dayLow: Math.min(last, open) - 0.7, cumVolume: vol,
   prev: { symbol, date: "2026-11-23", close: prev, high: prev + 1.4, low: prev - 1.9, volume: vol * 4 }, lastPollMs: Date.now() - 12000,
+  ...(symbol === "XOM" ? {} : { w52: { date: "2026-11-24", sessions: symbol === "PLTR" ? 120 : 251, high: symbol === "NVDA" ? 145.3 : +(last * 1.25).toFixed(2), highDate: "2026-03-12", low: +(last * 0.7).toFixed(4), lowDate: "2026-06-02" } }),
   baseline: symbol === "TSLA" ? { status: "BUILDING" } : symbol === "XOM" ? { status: "NO_BASELINE" } : { status: "OK", multiple: 1.4, avgCumNow: vol / 1.4, thresholdShares: Math.round(vol / 1.4 * 2) },
 }));
 const initialRules = () => [

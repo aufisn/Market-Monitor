@@ -10,7 +10,9 @@ import { escapeHtml } from "./util";
 export const MAX_LINE = 38;
 export const e = escapeHtml;
 
-export const ICON: Record<RuleKind, string> = { HIGH: "📈", LOW: "📉", VOLUME: "📊" };
+export const ICON: Record<RuleKind, string> = { HIGH: "📈", LOW: "📉", VOLUME: "📊", HIGH52: "🏔", LOW52: "🕳" };
+/** How a rule is named in messages: the 52-week rules read "52W HIGH" / "52W LOW". */
+export const RULE_LABEL: Record<RuleKind, string> = { HIGH: "HIGH", LOW: "LOW", VOLUME: "VOLUME", HIGH52: "52W HIGH", LOW52: "52W LOW" };
 
 const WIDE = "✅⏱⏰⛔❌⌨";
 

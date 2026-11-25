@@ -369,6 +369,18 @@ function gaugeEl(v) {
     h("span", { class: "gl", "aria-hidden": "true" }, h("span", { text: "LOW " + L.money(v.loP) }), h("span", { text: "HIGH " + L.money(v.hiP) }))),
     h("p", { class: "gkey", "aria-hidden": "true", text: "P prev close · O open (IEX) · ▲ last" }));
 }
+/** 52-week range: a thin bar with the last price on it, the two levels and whether the 52-week alerts are on. */
+function range52El(v) {
+  const m = L.range52Model(v.w52, v.last);
+  if (!m) return h("p", { class: "sm dm r52none", text: "52-week range: " + (v.w52 ? "no history" : "loading") + (v.range52 ? " · 52W alerts on" : "") });
+  const mk = h("span", { class: "m" + (m.beyond ? " beyond" : ""), "aria-hidden": "true", text: "▲" });
+  if (m.pos !== null) mk.style.left = m.pos + "%"; else mk.hidden = true;
+  const label = "52-week range " + L.money(m.low) + " to " + L.money(m.high) + (Number.isFinite(v.last) ? ", last " + L.money(v.last) : "") + (m.beyond ? ", a new 52-week " + (v.last > m.high ? "high" : "low") : "");
+  return h("div", { class: "dm r52" },
+    h("div", { class: "r52h" }, h("span", { text: "52-week range" + (m.short ? " (under a year)" : "") }), h("span", { class: "r52s" + (v.range52 ? " on" : ""), text: v.range52 ? "🔔 alerts on" : "alerts off" })),
+    h("div", { class: "r52bar", role: "img", "aria-label": label }, h("span", { class: "track" }), mk),
+    h("div", { class: "r52l num", "aria-hidden": "true" }, h("span", { text: "$" + L.money(m.low) }), h("span", { text: "$" + L.money(m.high) })));
+}
 function ackBtn(v, label) {
   return h("button", { type: "button", class: "btn pri", "data-fk": v.sym + ":ack", text: label || "Acknowledge", "aria-label": "Acknowledge " + v.sym, onclick: () => act(() => api("/api/ack", { method: "POST", body: { symbol: v.sym } }), (r) => "Acknowledged " + v.sym + " (" + r.acknowledged + " rule" + (r.acknowledged === 1 ? "" : "s") + ")") });
 }
@@ -425,7 +437,7 @@ function cardEl(v) {
       h("div", { class: "cols" },
         h("dl", { class: "rws dm" }, rw("Prev Close", dollars(v.prev)), rw("Open", dollars(v.open)), rw("Day high", dollars(v.dayHigh)), rw("Day low", dollars(v.dayLow))),
         h("dl", { class: "rws dm" }, rw("LOW alert", levelText(v.low, v.loP)), rw("HIGH alert", levelText(v.high, v.hiP)), rw("Volume alert", volAlertText(v)), rw("Volume now", L.compact(v.cumVolume))),
-        h("div", {}, gblock, h("p", { class: "sm dm", text: volUsualText(v) }))),
+        h("div", {}, gblock, range52El(v), h("p", { class: "sm dm", text: volUsualText(v) }))),
       note];
   } else {
     const hasVol = Number.isFinite(v.cumVolume);
@@ -442,7 +454,7 @@ function cardEl(v) {
         rw("LOW alert", lv(v.low, v.loP)), rw("HIGH alert", lv(v.high, v.hiP)),
         rw("Volume now", volNow), rw("Volume alert", volAl)),
       v.baseline?.status === "BUILDING" || v.baseline?.status === "NO_BASELINE" ? h("p", { class: "sm dm", text: "Usual-volume average: " + (v.baseline.status === "BUILDING" ? "building" : "not available yet") }) : null,
-      gblock, Number.isFinite(v.volAvgMultiple) ? h("p", { class: "sm dm", text: "Volume is " + v.volAvgMultiple.toFixed(1) + "x the usual at this time" }) : null, note];
+      gblock, range52El(v), Number.isFinite(v.volAvgMultiple) ? h("p", { class: "sm dm", text: "Volume is " + v.volAvgMultiple.toFixed(1) + "x the usual at this time" }) : null, note];
   }
   return h("article", { class: "card cd st-" + v.status + " f-" + v.fresh + (v.paused ? " paused" : "") + (v.status === "CROSSED" ? " alert" : ""), "aria-label": v.sym }, body, cardActions(v));
 }
@@ -800,6 +812,11 @@ function stockSheet(sym) {
     const highU = sel("sfHighU", "HIGH unit", UNIT_OPTS, ex?.high?.mode || "dollar");
     const volU = sel("sfVolU", "Volume unit", [["multiple", "x usual at this time"], ["absolute", "shares"]], ex?.volume?.mode || "multiple");
     const noteIn = h("textarea", { class: "in ta", id: "sfNote", maxlength: "200", rows: "2", value: ex?.notes || "" });
+    let r52 = !!ex?.range52;
+    const pv52 = h("p", { class: "pv", id: "pv52", "aria-live": "polite" });
+    const sw52 = h("button", { type: "button", class: "sw", id: "sf52", role: "switch", "aria-checked": r52 ? "true" : "false", "aria-describedby": "pv52",
+      onclick: () => { r52 = !r52; sw52.setAttribute("aria-checked", r52 ? "true" : "false"); err.textContent = ""; calc(); } },
+      h("span", { text: "52-week high / low" }), h("span", { class: "t", "aria-hidden": "true" }));
     const pvLow = h("p", { class: "pv", id: "pvLow", "aria-live": "polite" });
     const pvHigh = h("p", { class: "pv", id: "pvHigh", "aria-live": "polite" });
     const pvVol = h("p", { class: "pv", id: "pvVol", "aria-live": "polite" });
@@ -811,13 +828,14 @@ function stockSheet(sym) {
     const no = h("button", { type: "button", class: "btn", text: "No, go back", onclick: () => { confirmBox.hidden = true; form.hidden = false; lowIn.focus(); } });
     const confirmBox = h("div", { class: "confirm", hidden: true, role: "alertdialog", "aria-labelledby": "cfT" }, h("h3", { id: "cfT", text: "This will alert immediately. Save?" }), cfP, h("div", { class: "dact" }, yes, no));
     let pending = null;
-    const read = () => ({ editing: !!v, existing: ex, symbol: symIn.value, on, low: { mode: lowU.value, text: lowIn.value }, high: { mode: highU.value, text: highIn.value }, vol: { mode: volU.value, text: volIn.value }, notes: noteIn.value, prev: v?.prev, last: v?.last, cum: v?.cumVolume });
+    const read = () => ({ editing: !!v, existing: ex, symbol: symIn.value, on, low: { mode: lowU.value, text: lowIn.value }, high: { mode: highU.value, text: highIn.value }, vol: { mode: volU.value, text: volIn.value }, range52: r52, notes: noteIn.value, prev: v?.prev, last: v?.last, cum: v?.cumVolume });
     function calc() {
       const r = L.checkStockForm(read());
       const line = (el, res, none, ok) => { el.textContent = res.state === "ok" ? ok : res.state === "error" ? res.err : none; el.classList.toggle("bad", res.state === "error"); };
       line(pvLow, r.low, "No LOW alert", r.low.state === "ok" ? L.thresholdSentence("low", r.low, v?.prev) : "");
       line(pvHigh, r.high, "No HIGH alert", r.high.state === "ok" ? L.thresholdSentence("high", r.high, v?.prev) : "");
       line(pvVol, r.vol, "No volume alert", r.vol.state === "ok" ? L.volumeSentence(r.vol, v?.cumVolume) : "");
+      pv52.textContent = L.range52Sentence(r52, v?.w52);
       pvNote.textContent = r.vol.state === "ok" && r.vol.mode === "multiple" && L.usualVolumeWaits(!!v, v?.baseline) ? L.USUAL_VOLUME_NOTE : "";
       return r;
     }
@@ -858,8 +876,9 @@ function stockSheet(sym) {
       h("div", { class: "field" }, h("label", { for: "sfLow", text: "LOW alert (optional)" }), h("div", { class: "frow" }, lowIn, lowU), pvLow),
       h("div", { class: "field" }, h("label", { for: "sfHigh", text: "HIGH alert (optional)" }), h("div", { class: "frow" }, highIn, highU), pvHigh),
       h("div", { class: "field" }, h("label", { for: "sfVol", text: "Volume alert (optional)" }), h("div", { class: "frow" }, volIn, volU), pvVol, pvNote),
+      h("div", { class: "field" }, h("span", { class: "lbl", text: "52-week alerts (optional)" }), sw52, pv52),
       h("div", { class: "field" }, h("label", { for: "sfNote", text: "Note (optional)" }), noteIn),
-      h("p", { class: "sm", text: "Set at least one of LOW, HIGH or Volume. LOW must be below HIGH." + (v ? "" : " The symbol is checked with the data source.") }),
+      h("p", { class: "sm", text: "Set at least one of LOW, HIGH, Volume or 52-week. LOW must be below HIGH." + (v ? "" : " The symbol is checked with the data source.") }),
       err, h("div", { class: "dact" }, save, h("button", { type: "button", class: "btn", text: "Cancel", onclick: cancelSheet })));
     form.addEventListener("input", () => { err.textContent = ""; calc(); });
     form.addEventListener("change", () => calc());
@@ -928,7 +947,7 @@ async function loadHistory() {
   }
 }
 function alertRow(r, v) {
-  const R = r.rule;
+  const R = L.ruleLabel(r.rule);
   const price = Number.isFinite(r.t0Value) ? " at " + L.money(r.t0Value) : "";
   const limit = Number.isFinite(r.thresholdAtT0) ? " (limit " + L.money(r.thresholdAtT0) + ")" : "";
   return h("li", { class: "row" + (L.isActiveRule(r) ? " crossed" : "") },
@@ -955,7 +974,7 @@ function alertsTab(root) {
     const act_ = rules.filter(L.isActiveRule), ack_ = rules.filter((r) => r.state === "ACKNOWLEDGED"), close_ = rules.filter((r) => r.state === "UNACKNOWLEDGED_AT_CLOSE");
     fill(unack, h("h2", { text: "Unacknowledged (" + act_.length + ")" }), act_.length ? h("ul", { class: "rows" }, act_.map((r) => alertRow(r, vmBy.get(r.symbol)))) : h("p", { class: "empty", text: "✓ Nothing needs you right now." }));
     fill(today, h("h2", { text: "Today, already handled" }),
-      close_.length ? h("ul", { class: "rows" }, close_.map((r) => h("li", { class: "row" }, h("div", { class: "b1" }, h("span", { class: "sym", text: r.symbol }), h("span", { class: "chip warn", text: "⏸ " + r.rule + " unacknowledged at close" }))))) : null,
+      close_.length ? h("ul", { class: "rows" }, close_.map((r) => h("li", { class: "row" }, h("div", { class: "b1" }, h("span", { class: "sym", text: r.symbol }), h("span", { class: "chip warn", text: "⏸ " + L.ruleLabel(r.rule) + " unacknowledged at close" }))))) : null,
       ack_.length ? h("ul", { class: "rows" }, ack_.map((r) => alertRow(r))) : (close_.length ? null : h("p", { class: "empty", text: "No alerts handled today yet." })));
     fill(hist, h("h2", { text: "History (latest first)" }), S.hist.error ? h("p", { class: "err", role: "alert", text: S.hist.error }) : null,
       S.hist.rows.length ? h("ul", { class: "rows" }, S.hist.rows.map(logRow)) : h("p", { class: "empty", text: "No alert history yet." }));
@@ -963,7 +982,7 @@ function alertsTab(root) {
 }
 function logRow(r) {
   return h("li", { class: "row log-row" },
-    h("div", { class: "b1" }, h("span", { class: "chip" + (r.kind === "ERROR" ? " bad" : r.kind === "FIRST_ALERT" || r.kind === "LATE_ALERT" ? " bad solid" : ""), text: r.kind }), r.symbol ? h("span", { class: "sym", text: r.symbol }) : null, r.rule ? h("span", { class: "chip", text: r.rule }) : null),
+    h("div", { class: "b1" }, h("span", { class: "chip" + (r.kind === "ERROR" ? " bad" : r.kind === "FIRST_ALERT" || r.kind === "LATE_ALERT" ? " bad solid" : ""), text: r.kind }), r.symbol ? h("span", { class: "sym", text: r.symbol }) : null, r.rule ? h("span", { class: "chip", text: L.ruleLabel(r.rule) }) : null),
     h("div", { class: "num sm", text: L.bothWithDate(r.tMs, true) }),
     h("div", { class: "d", text: L.detailText(r.detail) }));
 }

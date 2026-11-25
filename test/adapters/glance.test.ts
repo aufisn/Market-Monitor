@@ -19,7 +19,7 @@ const D = "2026-11-30"; // Mon 30 Nov 2026 (EST: Muscat = ET + 9 h)
 const URL_ = "https://example.com/dashboard";
 const ctxAt = (hhmm: string, extra: Partial<GlanceCtx> = {}): GlanceCtx => ({ nowMs: et(D, hhmm), dashboardUrl: URL_, ...extra });
 
-const rs = (symbol: string, rule: "HIGH" | "LOW" | "VOLUME", o: Partial<RuleState> = {}): RuleState => ({
+const rs = (symbol: string, rule: RuleState["rule"], o: Partial<RuleState> = {}): RuleState => ({
   date: D, symbol, rule, state: "TRIGGERED", cycle: 1, remindersSent: 0, version: 1, ...o,
 });
 const mk = (symbol: string, o: Partial<MarketState> = {}): MarketState => ({ symbol, date: D, ...o });
@@ -35,6 +35,20 @@ const rowsOf = (b: { text: string }[][] | undefined) => (b ?? []).map((row) => r
 
 // ------------------------------------------------------------ first alerts
 describe("A · first alerts", () => {
+  it("52W HIGH (NVDA): own label and icon, old level shown, no Ack + move, callback round-trips", () => {
+    const ev: OutboundEvent = {
+      type: "FIRST_ALERT", threshold: 145,
+      rule: rs("NVDA", "HIGH52", { t0Ms: et(D, "10:22"), t0Value: 145.6, thresholdAtT0: 145 }),
+      market: mk("NVDA", { last: { t: 1, p: 145.6, s: 1 }, prev: prev(138.2, 139.4, 136.8, 6.1e6), w52: { date: D, sessions: 251, high: 145, highDate: "2026-03-12", low: 90, lowDate: "2026-06-01" } }),
+    };
+    const r = renderGlance(ev, ctxAt("10:22"));
+    expect(lines(r)[0]).toBe("🚨 NEW 🏔 <b>NVDA 52W HIGH</b> 145.60");
+    expect(r.text).toContain("Old 52W high 145.00 (Thu 12 Mar)");
+    expect(widest(r.text)).toBeLessThanOrEqual(38);
+    expect(rowsOf(r.buttons)).toEqual([["✅ Acknowledge"], ["ℹ️ Details"], ["🔕 Mute 1h", "📊 Dashboard"]]);
+    expect(decodeCallback(r.buttons![0]![0]!.data!)).toEqual({ type: "ack", symbol: "NVDA", rule: "HIGH52", cycle: 1 });
+  });
+
   it("HIGH (NVDA)", () => {
     const ev: OutboundEvent = {
       type: "FIRST_ALERT", threshold: 145,

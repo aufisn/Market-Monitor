@@ -7,7 +7,7 @@ import { resolveThreshold } from "../core/rules";
 import { MIN, nyLocalToUtc } from "../core/time";
 import type { Ctx } from "./env";
 
-const RULES: RuleKind[] = ["HIGH", "LOW", "VOLUME"];
+const RULES: RuleKind[] = ["HIGH", "LOW", "VOLUME", "HIGH52", "LOW52"];
 
 export const volumeRuleText = (v: StockConfig["volume"]): string | undefined =>
   !v ? undefined : v.mode === "multiple" ? `${v.value}x average` : `${vol(v.value)} shares`;

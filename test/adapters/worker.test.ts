@@ -121,7 +121,9 @@ describe("dashboard API behaviour", () => {
     const r = await post({ symbol: "MSFT", notes: "x" });
     expect(r.status).toBe(422);
     expect(((await r.json()) as { message?: string; error: string }).error).toBe("NO_ALERT");
-    expect(JSON.stringify(await (await post({ symbol: "MSFT" })).json())).toContain("Set at least one alert: LOW, HIGH or Volume.");
+    expect(JSON.stringify(await (await post({ symbol: "MSFT" })).json())).toContain("Set at least one alert: LOW, HIGH, Volume or 52-week.");
+    expect((await post({ symbol: "AAPL", range52: true })).status).toBe(201); // the 52-week switch alone is an alert
+    expect((await post({ symbol: "AMD", range52: "yes" })).status).toBe(400);
     expect((await post({ symbol: "MSFT", volume: { mode: "multiple", value: 2 } })).status).toBe(201);
     const put = (b: unknown) => api("/api/stocks/MSFT", { method: "PUT", body: JSON.stringify(b) });
     expect((await put({ volume: null })).status).toBe(422); // would leave none

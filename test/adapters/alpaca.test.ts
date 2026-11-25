@@ -116,6 +116,11 @@ describe("alpaca official daily bars (end-of-day summary)", () => {
     expect(f.calls[1]!.url).toContain("page_token=p2");
     expect(f.calls).toHaveLength(2);
   });
+  it("52-week range request asks for split-adjusted bars", async () => {
+    const f = fakeFetch({ "/v2/stocks/bars": () => jsonRes({ bars: {}, next_page_token: null }) });
+    await mk(f).officialDailyBars(["A"], 0, Date.parse("2026-11-24T05:00:00Z"), { splitAdjusted: true });
+    expect(new URL(f.calls[0]!.url).searchParams.get("adjustment")).toBe("split");
+  });
   it("a refused SIP request (403) is an AUTH-kind error with no key in the message", async () => {
     const f = fakeFetch({ "/v2/stocks/bars": () => jsonRes({ message: "subscription does not permit querying recent SIP data" }, 403) });
     const err = await mk(f).officialDailyBars(["A"], 0, Date.now()).catch((e) => e);

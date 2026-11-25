@@ -156,12 +156,14 @@ export class AlpacaMarketData implements MarketData {
    * (otherwise HTTP 403, mapped to AUTH). [UNVERIFIED-PHASE0] The bar of the current day is
    * returned while the day is closed and covers the whole day up to `end`.
    */
-  async officialDailyBars(symbols: Symbol[], startMs: number, endMs: number): Promise<Record<Symbol, Bar[]>> {
-    return this.barsMulti(symbols, "1Day", startMs, endMs, "sip");
+  async officialDailyBars(symbols: Symbol[], startMs: number, endMs: number, opts: { splitAdjusted?: boolean } = {}): Promise<Record<Symbol, Bar[]>> {
+    return this.barsMulti(symbols, "1Day", startMs, endMs, "sip", opts.splitAdjusted ? "split" : "raw");
   }
 
   // ---------------------------------------------------------------- bars with pagination
-  private async barsMulti(symbols: Symbol[], tf: string, startMs: number, endMs: number, feed: "iex" | "sip" = this.feed): Promise<Record<Symbol, Bar[]>> {
+  private async barsMulti(
+    symbols: Symbol[], tf: string, startMs: number, endMs: number, feed: "iex" | "sip" = this.feed, adjustment: "raw" | "split" = "raw",
+  ): Promise<Record<Symbol, Bar[]>> {
     const out: Record<Symbol, Bar[]> = {};
     if (symbols.length === 0 || endMs <= startMs) return out;
     let token: string | undefined;
@@ -174,7 +176,7 @@ export class AlpacaMarketData implements MarketData {
         end: new Date(endMs).toISOString(),
         limit: "10000",
         feed,
-        adjustment: "raw",
+        adjustment,
         sort: "asc",
         ...(token ? { page_token: token } : {}),
       });

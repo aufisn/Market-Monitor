@@ -17,7 +17,7 @@ import {
   encodeMute, encodeSeen, encodeTyped,
 } from "./callbacks";
 import {
-  ICON, both, e, etOnly, f2, glanceWidth, minutesText, mult, mult1, num, pack, pctOf, priceDecimals, sgn, shortDate, sp, vol, wrapPlain,
+  ICON, RULE_LABEL, both, e, etOnly, f2, glanceWidth, minutesText, mult, mult1, num, pack, pctOf, priceDecimals, sgn, shortDate, sp, vol, wrapPlain,
 } from "./glance-fmt";
 import type { Button, Rendered } from "./telegram";
 
@@ -56,13 +56,16 @@ const baselineOf = (ctx: GlanceCtx, symbol: string): Baseline | undefined => ctx
 const stockOf = (ctx: GlanceCtx, symbol: string): StockConfig | undefined => ctx.stocks?.find((s) => s.symbol === symbol);
 const dash = (ctx: Pick<GlanceCtx, "dashboardUrl">): Button[] => (ctx.dashboardUrl ? [{ text: "📊 Dashboard", url: ctx.dashboardUrl }] : []);
 const body = (lines: string[]): string => lines.join("\n");
-const rname = (r: { symbol: string; rule: RuleKind }): string => `${e(r.symbol)} ${r.rule}`;
+const rname = (r: { symbol: string; rule: RuleKind }): string => `${e(r.symbol)} ${RULE_LABEL[r.rule]}`;
+/** Only the user's own LOW / HIGH can be moved (the 52-week levels come from the data; volume has no move in v1). */
+const movable = (r: RuleKind): r is "HIGH" | "LOW" => r === "HIGH" || r === "LOW";
+const is52 = (r: RuleKind): boolean => r === "HIGH52" || r === "LOW52";
 
 // ------------------------------------------------------------ keyboards
 /** Acknowledge alone on row 1 so a night-time mis-tap lands on something harmless. */
 export function alertKeyboard(r: Pick<RuleState, "symbol" | "rule" | "cycle">, ctx: Pick<GlanceCtx, "dashboardUrl">): Button[][] {
   const row2: Button[] = [{ text: "ℹ️ Details", data: encodeDetails(r.symbol, r.rule) }];
-  if (r.rule !== "VOLUME") row2.push({ text: "↗ Ack + move", data: encodeChooser(r.symbol, r.rule, r.cycle) }); // v1: no move for VOLUME
+  if (movable(r.rule)) row2.push({ text: "↗ Ack + move", data: encodeChooser(r.symbol, r.rule, r.cycle) }); // v1: no move for VOLUME or 52W
   return [
     [{ text: "✅ Acknowledge", data: encodeAck(r.symbol, r.rule, r.cycle) }],
     row2,
@@ -102,6 +105,7 @@ function firstAlert(ev: Extract<OutboundEvent, { type: "FIRST_ALERT" }>, ctx: Gl
     const f = volumeFacts(baselineOf(ctx, r.symbol), r.date, t0, m.cumVolume);
     const chg = px !== undefined && m.prev ? pctOf(px, m.prev.close) : undefined;
     lines.push(...pack([chg ?? "", f.multiple !== undefined ? `IEX vol ${mult1(f.multiple)}` : ""]));
+    if (is52(r.rule)) lines.push(w52Line(r.rule, m));
   }
   lines.push(both(t0));
   return { text: body(lines), buttons: alertKeyboard(r, ctx) };
@@ -113,13 +117,22 @@ function lateAlert(ev: Extract<OutboundEvent, { type: "LATE_ALERT" }>, ctx: Glan
   const shown = r.rule === "VOLUME" ? vol(ev.threshold) : num(ev.threshold);
   const lines = [`⏱ <b>LATE</b> ${ICON[r.rule]} <b>${rname(r)}</b> ${shown}`];
   if (r.rule === "VOLUME") lines.push(`Reached by ${etOnly(ev.barTimeMs)}`);
-  else lines.push(...pack([`Touched ${etOnly(ev.barTimeMs)}`, `bar ${r.rule === "HIGH" ? "high" : "low"} ${num(ev.barPrice)}`]));
+  else lines.push(...pack([`Touched ${etOnly(ev.barTimeMs)}`, `bar ${r.rule === "HIGH" || r.rule === "HIGH52" ? "high" : "low"} ${num(ev.barPrice)}`]));
   lines.push(...pack([`Found ${etOnly(found)}`, "runs were missed"]));
   lines.push(both(ev.barTimeMs));
   return { text: body(lines), buttons: alertKeyboard(r, ctx) };
 }
 
 const levelText = (r: RuleState): string => (r.rule === "VOLUME" ? `≥ ${vol(r.thresholdAtT0)}` : num(r.thresholdAtT0));
+
+/** `Old 52W high 488.54 (12 Mar)`: the level that was passed. */
+function w52Line(rule: RuleKind, m: MarketState): string {
+  const w = m.w52;
+  const hi = rule === "HIGH52";
+  const lvl = hi ? w?.high : w?.low;
+  const d = hi ? w?.highDate : w?.lowDate;
+  return `Old 52W ${hi ? "high" : "low"} ${num(lvl)}${d ? ` (${shortDate(d)})` : ""}`;
+}
 
 function reminder(ev: Extract<OutboundEvent, { type: "REMINDER" }>, ctx: GlanceCtx): Rendered {
   const rules = [...ev.rules].sort((a, b) => (a.t0Ms ?? 0) - (b.t0Ms ?? 0)); // oldest first (FR-4.13)
@@ -141,10 +154,10 @@ function reminder(ev: Extract<OutboundEvent, { type: "REMINDER" }>, ctx: GlanceC
     return { text: body(lines), buttons: alertKeyboard(r, ctx) };
   }
   const lines = [`🔁 <b>REMINDERS</b> · not new alerts`, ...pack([`<b>${e(sym)}</b>`, ...now])];
-  for (const r of rules) lines.push(...pack([`${ICON[r.rule]} ${r.rule} ${levelText(r)}`, `#${r.remindersSent}`, `${open(r)} open`]));
+  for (const r of rules) lines.push(...pack([`${ICON[r.rule]} ${RULE_LABEL[r.rule]} ${levelText(r)}`, `#${r.remindersSent}`, `${open(r)} open`]));
   lines.push(...inside, both(ctx.nowMs));
   const buttons: Button[][] = [
-    ...rules.map((r): Button[] => [{ text: `✅ Ack ${r.rule}`, data: encodeAck(r.symbol, r.rule, r.cycle) }]),
+    ...rules.map((r): Button[] => [{ text: `✅ Ack ${RULE_LABEL[r.rule]}`, data: encodeAck(r.symbol, r.rule, r.cycle) }]),
     [{ text: `✅ Ack all ${sym}`, data: encodeAckStock(sym, rules) }],
     [{ text: "ℹ️ Details", data: encodeDetails(sym, first.rule) }, { text: "🔕 Mute 1h", data: encodeMute(sym, 60) }],
   ];
@@ -155,7 +168,7 @@ function reminder(ev: Extract<OutboundEvent, { type: "REMINDER" }>, ctx: GlanceC
 /** The edit that replaces an alert once it is acknowledged (FR-4.4): buttons removed. */
 export function renderAckConfirm(r: RuleState, nowMs: number, moved?: { from: number; to: number }): Rendered {
   const lines = [`✅ <b>${rname(r)}</b> acknowledged`, `Acknowledged ${both(r.ackMs ?? nowMs)}`];
-  if (moved && r.rule !== "VOLUME") {
+  if (moved && movable(r.rule)) {
     const pct = (moved.to / moved.from - 1) * 100;
     const p = Math.abs(pct) < 10 ? Math.round(pct * 100) / 100 : Math.round(pct * 10) / 10;
     lines.push(...pack([`${r.rule} moved ${f2(moved.from)} → ${f2(moved.to)}`, `(${p >= 0 ? "+" : "-"}${Math.abs(p)}%)`], " "));
@@ -190,6 +203,7 @@ export function renderDetails(d: DetailsInput): Rendered {
   L.push("<b>Levels</b>");
   if (r.rule === "VOLUME") L.push(`VOLUME ≥ ${e(d.volumeLimit ?? vol(r.thresholdAtT0))}`);
   else L.push(...pack([`HIGH ${num(d.high)}`, `LOW ${num(d.low)}`]));
+  if (m.w52?.high !== undefined) L.push(...pack([`52W high ${num(m.w52.high)}`, `low ${num(m.w52.low)}`]));
   if (r.t0Value !== undefined && r.rule !== "VOLUME") L.push(`Crossed at ${f2(r.t0Value)}`);
   L.push("<b>Volume</b>");
   const v = d.volume ?? {};
@@ -362,13 +376,16 @@ function eodBlock(s: EodStock): string {
   L.push(...pack([`Low ${na(s.low)}`, `High ${na(s.high)}`]));
   const x = s.volume !== undefined && s.avgVolume && s.avgVolume > 0 ? `${mult1(s.volume / s.avgVolume)} usual` : "";
   L.push(...pack([`Volume ${s.volume !== undefined ? vol(s.volume) : "n/a"}`, x]));
+  if (s.w52High !== undefined && s.w52Low !== undefined) {
+    L.push(...pack([`52W ${f2(s.w52Low)} – ${f2(s.w52High)}`, s.newHigh52 ? "new 52W high" : s.newLow52 ? "new 52W low" : ""]));
+  }
   for (const a of s.alerts) L.push(alertLine(a));
   return L.join("\n");
 }
 
 /** `🔔 LOW 10:42 ET · acknowledged`; shortened step by step so it always fits 38. */
 function alertLine(a: EodAlert): string {
-  const label = a.rule === "VOLUME" ? (a.multiple !== undefined ? `Volume ${mult1(a.multiple)}` : "Volume") : a.rule;
+  const label = a.rule === "VOLUME" ? (a.multiple !== undefined ? `Volume ${mult1(a.multiple)}` : "Volume") : RULE_LABEL[a.rule];
   const nth = a.count > 1 ? ` #${a.count}` : "";
   const time = etOnly(a.tMs);
   const tries = [
@@ -378,7 +395,7 @@ function alertLine(a: EodAlert): string {
     `🔔 ${label}${nth} ${time}`,
   ];
   // The mock-up uses the short word on Volume lines (the label is longer), the long word on price lines.
-  return tries.slice(a.rule === "VOLUME" ? 1 : 0).find((t) => glanceWidth(t) <= 38) ?? (tries[3] as string);
+  return tries.slice(a.rule === "VOLUME" || is52(a.rule) ? 1 : 0).find((t) => glanceWidth(t) <= 38) ?? (tries[3] as string);
 }
 
 function sessionEnded(ev: Extract<OutboundEvent, { type: "SESSION_ENDED" }>): Rendered[] {

@@ -66,18 +66,27 @@ export function buildEodStocks(i: EodInputs): EodStock[] {
     const today = bars.find((b) => barDate(b) === i.date);
     const alerts = alertsFor(sym, i.rules, cfg);
     const base = { symbol: sym, alertsOff: !!cfg.paused, alerts };
+    // 52-week range after today: the stored range (before today) widened by today's high / low.
+    const w = st?.w52;
+    const range = (hi: number | undefined, lo: number | undefined): Partial<EodStock> => {
+      if (w?.high === undefined || w.low === undefined) return {};
+      const nh = hi !== undefined && hi > w.high;
+      const nl = lo !== undefined && lo < w.low;
+      return { w52High: nh ? hi : w.high, w52Low: nl ? lo : w.low, ...(nh ? { newHigh52: true } : {}), ...(nl ? { newLow52: true } : {}) };
+    };
     if (today) {
       const past = bars.filter((b) => barDate(b) < i.date).slice(-i.sessions);
       // [UNVERIFIED-PHASE0] earlier 1Day bars are complete sessions; their volume is the official full-day volume.
       const avg = past.length >= EOD_MIN_HISTORY ? past.reduce((s, b) => s + b.v, 0) / past.length : undefined;
       const prevClose = past.length ? past[past.length - 1]!.c : st?.prev?.close; // stored prev.close is also SIP (previousDaily)
-      return { ...base, source: "SIP", close: today.c, prevClose, open: today.o, low: today.l, high: today.h, volume: today.v, ...(avg !== undefined ? { avgVolume: avg } : {}) };
+      return { ...base, source: "SIP", close: today.c, prevClose, open: today.o, low: today.l, high: today.h, volume: today.v, ...(avg !== undefined ? { avgVolume: avg } : {}), ...range(today.h, today.l) };
     }
     // Fallback: what the intraday (IEX) polling stored. Volume "usual" only from an IEX baseline.
     const b = i.baselines.get(sym);
     return {
       ...base, source: "IEX", close: st?.last?.p, prevClose: st?.prev?.close, open: st?.open, low: st?.dayLow, high: st?.dayHigh, volume: st?.cumVolume,
       ...(b && b.status === "OK" && b.avgFullDay > 0 ? { avgVolume: b.avgFullDay } : {}),
+      ...range(st?.dayHigh, st?.dayLow),
     };
   });
   const first = (s: EodStock) => (s.alerts.length ? s.alerts[0]!.tMs : Infinity);

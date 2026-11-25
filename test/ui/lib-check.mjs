@@ -47,4 +47,12 @@ assert.match(L.checkStockForm({ ...ed, low: { mode: "dollar", text: "" }, high: 
 assert.equal(L.checkStockForm({ ...ed, low: { mode: "dollar", text: "125" } }).low.crossed, true); // 125 is above the last price 120 for a LOW
 assert.match(L.thresholdSentence("low", L.evalThresholdLoose({ which: "low", mode: "dollar", text: "242", prev: 251.6, last: 250 }), 251.6), /falls to \$242\.00 \(3\.8% below Prev Close \$251\.60\)/);
 assert.equal(L.usualVolumeWaits(false, { status: "OK" }), true); assert.equal(L.usualVolumeWaits(true, { status: "OK" }), false); assert.equal(L.usualVolumeWaits(true, { status: "BUILDING" }), true);
+// 52-week switch: counts as an alert, sent on add, sent on change only
+assert.deepEqual(L.checkStockForm({ ...base, range52: true }).body, { symbol: "NVDA", range52: true });
+assert.equal(L.checkStockForm({ ...ed, range52: true }).body.range52, true);
+assert.equal("range52" in L.checkStockForm({ ...ed, notes: "x" }).body, false);
+assert.equal(L.ruleLabel("HIGH52"), "52W HIGH"); assert.equal(L.ruleLabel("LOW"), "LOW");
+assert.deepEqual(L.range52Model({ high: 200, low: 100, sessions: 251 }, 150), { low: 100, high: 200, lowDate: undefined, highDate: undefined, pos: 50, short: false, beyond: false });
+assert.equal(L.range52Model({ high: 200, low: 100, sessions: 120 }, 210).beyond, true);
+assert.match(L.range52Sentence(true, { high: 200, low: 100, sessions: 251 }), /above the 52-week high \$200\.00 or below the 52-week low \$100\.00/);
 console.log("lib-check ok");

@@ -176,6 +176,23 @@ export const FRESH_LABEL = {
 
 const ACTIVE = new Set(["TRIGGERED", "REPEATING"]);
 export const isActiveRule = (r) => ACTIVE.has(r.state);
+/** How a rule is named on screen. */
+export const ruleLabel = (r) => ({ HIGH52: "52W HIGH", LOW52: "52W LOW" })[r] || r;
+
+/** 52-week range bar: position 0..100 of the last price, or null. "Range since listing" when under a year of history. */
+export function range52Model(w52, last) {
+  if (!w52 || !(w52.high > 0) || !(w52.low > 0) || w52.high < w52.low) return null;
+  const span = w52.high - w52.low;
+  const pos = Number.isFinite(last) ? (span > 0 ? Math.max(0, Math.min(100, ((last - w52.low) / span) * 100)) : 50) : null;
+  return { low: w52.low, high: w52.high, lowDate: w52.lowDate, highDate: w52.highDate, pos, short: (w52.sessions || 0) < 240, beyond: Number.isFinite(last) && (last > w52.high || last < w52.low) };
+}
+/** Sentence under the 52-week switch in the form. */
+export function range52Sentence(on, w52) {
+  if (!on) return "No 52-week alert";
+  const m = range52Model(w52);
+  if (!m) return "Alert when the price passes the 52-week high or low. The levels are loaded from the official daily prices within a few minutes.";
+  return "Alert when the price goes above the 52-week high $" + money(m.high) + " or below the 52-week low $" + money(m.low) + (m.short ? " (less than a year of history)" : "");
+}
 
 /** Builds everything the screen needs for one stock, from /api/state data. */
 export function buildVM(stock, market, rules, settings, nowMs, marketOpen, flags = {}) {
@@ -221,7 +238,7 @@ export function buildVM(stock, market, rules, settings, nowMs, marketOpen, flags
   return {
     sym: stock.symbol, stock, status, near, muted, paused, pausedAll: !!flags.pausedAll, notes: stock.notes || "",
     last, lastT, ageS, fresh: fr, prev, open: market?.open, dayHigh: market?.dayHigh, dayLow: market?.dayLow, cumVolume: market?.cumVolume,
-    high: hi, low: lo, hiP, loP, vol: stock.volume, volAvgMultiple: market?.baseline?.multiple, baseline: market?.baseline,
+    high: hi, low: lo, hiP, loP, vol: stock.volume, range52: !!stock.range52, w52: market?.w52, volAvgMultiple: market?.baseline?.multiple, baseline: market?.baseline,
     changeAbs: Number.isFinite(last) && Number.isFinite(prev) ? last - prev : NaN,
     changePct: Number.isFinite(last) && Number.isFinite(prev) && prev !== 0 ? ((last - prev) / prev) * 100 : NaN,
     nearest, active, acked, atClose,
@@ -401,7 +418,7 @@ export function checkStockForm(f) {
   for (const [k, r] of [["low", low], ["high", high], ["vol", vol]]) if (r.state === "error") fail(k, (k === "vol" ? "Volume" : WHICH[k]) + ": " + r.err);
   // both are percent or both are dollars: compare the numbers even when Prev Close is unknown
   if (low.state === "ok" && high.state === "ok" && low.mode === high.mode && low.value >= high.value) fail("low", "LOW must be below HIGH.");
-  if (low.state !== "ok" && high.state !== "ok" && vol.state !== "ok") fail("low", "Set at least one alert: LOW, HIGH or Volume.");
+  if (low.state !== "ok" && high.state !== "ok" && vol.state !== "ok" && !f.range52) fail("low", "Set at least one alert: LOW, HIGH, Volume or 52-week.");
   if (out.err) return out;
   const th = (r) => (r.state === "ok" ? { mode: r.mode, value: r.value } : null);
   const notes = (f.notes || "").trim();
@@ -410,6 +427,7 @@ export function checkStockForm(f) {
     if (low.state === "ok") body.low = th(low);
     if (high.state === "ok") body.high = th(high);
     if (vol.state === "ok") body.volume = th(vol);
+    if (f.range52) body.range52 = true;
     if (notes) body.notes = notes;
     if (!f.on) body.paused = true;
     out.body = body; out.changed = true;
@@ -421,6 +439,7 @@ export function checkStockForm(f) {
     const nv = th(r);
     if (!sameTh(nv, ex[key])) body[key] = nv; // null removes the alert
   }
+  if (!!f.range52 !== !!ex.range52) body.range52 = !!f.range52;
   if (notes !== (ex.notes || "")) body.notes = notes || null;
   if (f.on === !!ex.paused) body.paused = !f.on;
   out.body = body; out.changed = Object.keys(body).length > 0;

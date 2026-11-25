@@ -36,7 +36,7 @@ export type CallbackAction =
   | { type: "cancelset"; symbol: string; field: SetField };
 
 export const SYMBOL_RE = /^[A-Z][A-Z0-9]{0,4}([.-][A-Z])?$/;
-const RULES = new Set(["HIGH", "LOW", "VOLUME"]);
+const RULES = new Set(["HIGH", "LOW", "VOLUME", "HIGH52", "LOW52"]);
 const FIELDS = new Set(["high", "low", "volume"]);
 
 export const encodeAck = (symbol: string, rule: RuleKind, cycle: number): string => `a|${symbol}|${rule}|${cycle}`;

@@ -105,7 +105,7 @@ export function validateSettings(v: unknown, base: Settings = DEFAULT_SETTINGS):
   return { ...base, ...validateSettingsPartial(v) };
 }
 
-const STOCK_KEYS = ["symbol", "enabled", "high", "low", "volume", "mutedUntilMs", "paused", "notes", "overrides"] as const;
+const STOCK_KEYS = ["symbol", "enabled", "high", "low", "volume", "range52", "mutedUntilMs", "paused", "notes", "overrides"] as const;
 
 /**
  * Merge a patch onto `existing` (or build new) and validate. `null` clears an
@@ -130,6 +130,11 @@ export function validateStockInput(body: unknown, existing?: StockConfig, opts: 
     if (body.volume === null) delete out.volume;
     else out.volume = validateVolume(body.volume, "volume");
   }
+  if (body.range52 !== undefined) {
+    if (body.range52 === null || body.range52 === false) delete out.range52;
+    else if (body.range52 === true) out.range52 = true;
+    else bad("range52", "must be true or false");
+  }
   if (body.mutedUntilMs !== undefined) {
     if (body.mutedUntilMs === null) delete out.mutedUntilMs;
     else {
@@ -151,12 +156,12 @@ export function validateStockInput(body: unknown, existing?: StockConfig, opts: 
     if (body.overrides === null) delete out.overrides;
     else out.overrides = validateSettingsPartial(body.overrides, "overrides");
   }
-  // At least one alert (LOW, HIGH or Volume). Import may carry older stocks without one (opts.allowNoAlert).
+  // At least one alert (LOW, HIGH, Volume or the 52-week switch). Import may carry older stocks without one (opts.allowNoAlert).
   // A legacy stock that already has none can still change notes/enabled/paused; touching the rules is checked.
-  const has = (c?: StockConfig) => !!(c?.high || c?.low || c?.volume);
-  const touched = ["high", "low", "volume"].some((k) => body[k] !== undefined);
+  const has = (c?: StockConfig) => !!(c?.high || c?.low || c?.volume || c?.range52);
+  const touched = ["high", "low", "volume", "range52"].some((k) => body[k] !== undefined);
   if (!opts.allowNoAlert && !has(out) && (!existing || has(existing) || touched)) {
-    throw new ApiError(422, "NO_ALERT", "Set at least one alert: LOW, HIGH or Volume.");
+    throw new ApiError(422, "NO_ALERT", "Set at least one alert: LOW, HIGH, Volume or 52-week.");
   }
   return out;
 }
@@ -200,5 +205,6 @@ export function changedRules(a: StockConfig | undefined, b: StockConfig): RuleKi
   if (JSON.stringify(a?.high) !== JSON.stringify(b.high)) out.push("HIGH");
   if (JSON.stringify(a?.low) !== JSON.stringify(b.low)) out.push("LOW");
   if (JSON.stringify(a?.volume) !== JSON.stringify(b.volume)) out.push("VOLUME");
+  if (!!a?.range52 !== !!b.range52) out.push("HIGH52", "LOW52");
   return out;
 }

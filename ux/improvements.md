@@ -41,3 +41,12 @@ Applies to every form (add, edit, mute, remove, ...).
   - One line per alert that fired that day, with its time and whether it was acknowledged
 - Stocks that alerted come first, then A to Z. Stocks with alerts off are included, marked "(alerts off)".
 - Split into two messages if it doesn't fit in one.
+
+## 6. 52-week high / low alerts (accepted 2026-11-25, no mock-up)
+- One switch in the Add/Edit form, "52-week high / low", turns on both alerts. It counts toward the at-least-one-alert rule.
+- Levels: the highest High and lowest Low of the official (all-exchange), split-adjusted daily prices over the 52 weeks before today. Built before the open and fixed for the day; a stock added during the day gets its levels on the next poll.
+- Fires when the price trades above the 52-week high or below the 52-week low (touching it is not enough). Same reminders, Acknowledge, Mute and gap scan as HIGH/LOW. No "Ack + move" (the level is not the user's).
+- Messages name it "52W HIGH" / "52W LOW" and show the old level and its date.
+- Card: a 52-week range bar with the last price on it, the two levels and whether the alerts are on, shown even with the switch off.
+- End-of-day summary: a line `52W low – high` per stock (including today), marked "new 52W high/low" when today set one.
+- Less than a year of history: the range uses what there is, and the card says "(under a year)".

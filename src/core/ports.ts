@@ -9,7 +9,10 @@
 
 export type TradingDate = string;
 export type Symbol = string;
-export type RuleKind = "HIGH" | "LOW" | "VOLUME";
+export type RuleKind = "HIGH" | "LOW" | "VOLUME" | "HIGH52" | "LOW52";
+/** Which side of the price a price rule watches (HIGH52 / LOW52 are the 52-week levels). */
+export const priceSide = (r: RuleKind): "HIGH" | "LOW" | undefined =>
+  r === "HIGH" || r === "HIGH52" ? "HIGH" : r === "LOW" || r === "LOW52" ? "LOW" : undefined;
 
 // ---------------------------------------------------------------- time
 export interface Clock {
@@ -64,7 +67,7 @@ export interface MarketData {
    * in ONE call (the adapter may paginate), for bars with start in [startMs, endMs). The caller
    * keeps endMs at least 15 minutes in the past (free-plan SIP rule). Bars are oldest first.
    */
-  officialDailyBars?(symbols: Symbol[], startMs: number, endMs: number): Promise<Record<Symbol, Bar[]>>;
+  officialDailyBars?(symbols: Symbol[], startMs: number, endMs: number, opts?: { splitAdjusted?: boolean }): Promise<Record<Symbol, Bar[]>>;
 }
 
 // ---------------------------------------------------------------- config
@@ -82,6 +85,8 @@ export interface StockConfig {
   high?: ThresholdInput;
   low?: ThresholdInput;
   volume?: VolumeInput;
+  /** One switch for both 52-week alerts (HIGH52 and LOW52). */
+  range52?: boolean;
   mutedUntilMs?: number;
   paused?: boolean;
   notes?: string;
@@ -155,6 +160,21 @@ export interface MarketState {
   prev?: DailyRef;
   lastPollMs?: number;
   recentMinuteCloses?: number[]; // last 5, for the FR-3.4 median check
+  w52?: YearRange;
+}
+
+/**
+ * 52-week range from official (SIP) split-adjusted daily bars of the 52 weeks before `date` (today excluded).
+ * sessions = 0: no history (high/low missing). Fixed for the whole day.
+ */
+export interface YearRange {
+  date: TradingDate; // the trading date it was built for
+  sessions: number;
+  high?: number;
+  highDate?: TradingDate;
+  low?: number;
+  lowDate?: TradingDate;
+  firstDate?: TradingDate; // oldest bar used (shows "since listing" when the stock is younger than a year)
 }
 
 export interface Baseline {
@@ -209,6 +229,11 @@ export interface EodStock {
   volume?: number;
   /** Average full-day volume over recent sessions, same source as `volume`. */
   avgVolume?: number;
+  /** 52-week range before today, and whether today made a new 52-week high / low. */
+  w52High?: number;
+  w52Low?: number;
+  newHigh52?: boolean;
+  newLow52?: boolean;
   alerts: EodAlert[]; // oldest first
 }
 /** Stocks already in display order: alerted first (by first alert time), then A to Z. */
