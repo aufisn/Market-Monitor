@@ -370,6 +370,18 @@ function gaugeEl(v) {
     h("p", { class: "gkey", "aria-hidden": "true", text: "P prev close · O open (IEX) · ▲ last" }));
 }
 /** 52-week range: a thin bar with the last price on it, the two levels and whether the 52-week alerts are on. */
+/** The one coloured line at the top of a card, only while something needs attention. */
+function attentionEl(v) {
+  const a = L.attentionLine(v, nowMs());
+  if (!a) return null;
+  return h("div", { class: "say " + a.tone, role: a.tone === "red" ? "alert" : "status" },
+    h("div", {}, h("b", { text: a.title }), a.sub ? h("span", { text: a.sub }) : null),
+    a.tone === "red" ? ackBtn(v, "Acknowledge") : null);
+}
+function moreChips(v) {
+  const on = L.moreOn(v.stock);
+  return on.length ? h("div", { class: "chips dm", "aria-label": "More alerts on: " + on.join(", ") }, on.map((t) => h("span", { class: "mchip", text: t }))) : null;
+}
 function range52El(v) {
   const m = L.range52Model(v.w52, v.last);
   if (!m) return h("p", { class: "sm dm r52none", text: "52-week range: " + (v.w52 ? "no history" : "loading") + (v.range52 ? " · 52W alerts on" : "") });
@@ -378,7 +390,10 @@ function range52El(v) {
   const label = "52-week range " + L.money(m.low) + " to " + L.money(m.high) + (Number.isFinite(v.last) ? ", last " + L.money(v.last) : "") + (m.beyond ? ", a new 52-week " + (v.last > m.high ? "high" : "low") : "");
   return h("div", { class: "dm r52" },
     h("div", { class: "r52h" }, h("span", { text: "52-week range" + (m.short ? " (under a year)" : "") }), h("span", { class: "r52s" + (v.range52 ? " on" : ""), text: v.range52 ? "🔔 alerts on" : "alerts off" })),
-    h("div", { class: "r52bar", role: "img", "aria-label": label }, h("span", { class: "track" }), mk),
+    h("div", { class: "r52bar", role: "img", "aria-label": label + (m.ma50 !== null ? ", 50-day average " + L.money(v.w52.ma50) : "") + (m.ma200 !== null ? ", 200-day average " + L.money(v.w52.ma200) : "") },
+      h("span", { class: "track" }),
+      [["50d", m.ma50, ""], ["200d", m.ma200, " lo"]].filter(([, p]) => p !== null).map(([t, p, c]) => { const g = h("span", { class: "tick" + c, "aria-hidden": "true" }, h("span", { class: "tl", text: t })); g.style.left = p + "%"; return g; }),
+      mk),
     h("div", { class: "r52l num", "aria-hidden": "true" }, h("span", { text: "$" + L.money(m.low) }), h("span", { text: "$" + L.money(m.high) })));
 }
 function ackBtn(v, label) {
@@ -417,7 +432,7 @@ function switchBtn(v, id) {
 function cardActions(v) {
   const crossed = v.status === "CROSSED";
   return h("div", { class: "cact" },
-    crossed ? h("div", { class: "arow" }, ackBtn(v), moveBtn(v)) : null,
+    crossed && moveBtn(v) ? h("div", { class: "arow" }, moveBtn(v)) : null, // Acknowledge sits in the attention line
     h("button", { type: "button", class: "btn", "data-fk": v.sym + ":edit", text: "Edit", onclick: () => stockSheet(v.sym) }),
     h("button", { type: "button", class: "btn", "data-fk": v.sym + ":mute", text: v.muted ? "Unmute" : "Mute…", onclick: () => (v.muted ? act(() => api("/api/mute", { method: "POST", body: { symbol: v.sym, minutes: null } }), () => v.sym + " unmuted") : muteSheet(v)) }),
     h("button", { type: "button", class: "btn danger", "data-fk": v.sym + ":remove", text: "Remove…", onclick: () => removeSheet(v) }));
@@ -433,12 +448,12 @@ function cardEl(v) {
   if (wide) {
     body = [
       h("div", { class: "ctop" }, h("h3", { text: v.sym }), price, chip, switchBtn(v)),
-      age,
+      age, attentionEl(v),
       h("div", { class: "cols" },
         h("dl", { class: "rws dm" }, rw("Prev Close", dollars(v.prev)), rw("Open", dollars(v.open)), rw("Day high", dollars(v.dayHigh)), rw("Day low", dollars(v.dayLow))),
         h("dl", { class: "rws dm" }, rw("LOW alert", levelText(v.low, v.loP)), rw("HIGH alert", levelText(v.high, v.hiP)), rw("Volume alert", volAlertText(v)), rw("Volume now", L.compact(v.cumVolume))),
         h("div", {}, gblock, range52El(v), h("p", { class: "sm dm", text: volUsualText(v) }))),
-      note];
+      moreChips(v), note];
   } else {
     const hasVol = Number.isFinite(v.cumVolume);
     const shortM = (n) => (n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : L.compact(n));
@@ -448,13 +463,14 @@ function cardEl(v) {
     body = [
       h("div", { class: "ctop" }, h("h3", { text: v.sym }), switchBtn(v)),
       h("div", { class: "prow" }, h("div", { class: "dm" }, h("div", { class: "big num", text: Number.isFinite(v.last) ? "$" + L.money(v.last) : "\u2014" }), changeEl(v)), chip),
+      attentionEl(v),
       h("div", { class: "dm age", title: lastTime(v) }, h("span", { class: "lastt", text: Number.isFinite(v.lastT) ? "Last " + L.hm(v.lastT, L.TZ_ET, true) + " ET" : "No trade today" }), ageChip(v)),
       h("dl", { class: "rws g2 dm" }, rw("Prev Close", dollars(v.prev)), rw("Open", dollars(v.open)),
         rw("Day high", dollars(v.dayHigh)), rw("Day low", dollars(v.dayLow)),
         rw("LOW alert", lv(v.low, v.loP)), rw("HIGH alert", lv(v.high, v.hiP)),
         rw("Volume now", volNow), rw("Volume alert", volAl)),
       v.baseline?.status === "BUILDING" || v.baseline?.status === "NO_BASELINE" ? h("p", { class: "sm dm", text: "Usual-volume average: " + (v.baseline.status === "BUILDING" ? "building" : "not available yet") }) : null,
-      gblock, range52El(v), Number.isFinite(v.volAvgMultiple) ? h("p", { class: "sm dm", text: "Volume is " + v.volAvgMultiple.toFixed(1) + "x the usual at this time" }) : null, note];
+      h("div", { class: "dm" }, distLine(v)), range52El(v), Number.isFinite(v.volAvgMultiple) ? h("p", { class: "sm dm", text: "Volume is " + v.volAvgMultiple.toFixed(1) + "x the usual at this time" }) : null, moreChips(v), note];
   }
   return h("article", { class: "card cd st-" + v.status + " f-" + v.fresh + (v.paused ? " paused" : "") + (v.status === "CROSSED" ? " alert" : ""), "aria-label": v.sym }, body, cardActions(v));
 }
@@ -812,11 +828,27 @@ function stockSheet(sym) {
     const highU = sel("sfHighU", "HIGH unit", UNIT_OPTS, ex?.high?.mode || "dollar");
     const volU = sel("sfVolU", "Volume unit", [["multiple", "x usual at this time"], ["absolute", "shares"]], ex?.volume?.mode || "multiple");
     const noteIn = h("textarea", { class: "in ta", id: "sfNote", maxlength: "200", rows: "2", value: ex?.notes || "" });
-    let r52 = !!ex?.range52;
-    const pv52 = h("p", { class: "pv", id: "pv52", "aria-live": "polite" });
-    const sw52 = h("button", { type: "button", class: "sw", id: "sf52", role: "switch", "aria-checked": r52 ? "true" : "false", "aria-describedby": "pv52",
-      onclick: () => { r52 = !r52; sw52.setAttribute("aria-checked", r52 ? "true" : "false"); err.textContent = ""; calc(); } },
-      h("span", { text: "52-week high / low" }), h("span", { class: "t", "aria-hidden": "true" }));
+    // "More alerts" (design step 7): folded; one switch and one line each; only Fast move has settings.
+    const more = { range52: !!ex?.range52, fast: !!ex?.fast, averages: !!ex?.averages, halt: !!ex?.halt };
+    const mkSw = (id, key, label) => {
+      const b = h("button", { type: "button", class: "sw", id, role: "switch", "aria-checked": more[key] ? "true" : "false", "aria-label": label, "aria-describedby": id + "H",
+        onclick: () => { more[key] = !more[key]; b.setAttribute("aria-checked", more[key] ? "true" : "false"); err.textContent = ""; calc(); } },
+        h("span", { class: "t", "aria-hidden": "true" }));
+      return b;
+    };
+    const hint = (id) => h("p", { class: "hint", id: id + "H", "aria-live": "polite" });
+    const h52 = hint("sf52"), hFast = hint("sfFast"), hAvg = hint("sfAvg"), hHalt = hint("sfHalt");
+    const fastPct = h("input", { class: "in", id: "sfFastPct", type: "text", inputmode: "decimal", autocomplete: "off", value: String(ex?.fast?.pct ?? 3), "aria-label": "Fast move percent" });
+    const fastMin = sel("sfFastMin", "Fast move minutes", L.FAST_MINUTES.map((m) => [String(m), String(m)]), String(ex?.fast?.minutes ?? 15));
+    const fastCfg = h("div", { class: "mini" }, fastPct, "% in", fastMin, "min");
+    const opt = (name, hintEl, sw, extra) => h("div", { class: "opt" }, h("div", { class: "txt" }, h("div", { class: "nm", text: name }), hintEl, extra || null), sw);
+    const moreSum = h("span", { class: "s" });
+    const moreBox = h("details", { class: "more" },
+      h("summary", {}, h("span", {}, h("span", { text: "More alerts " }), moreSum), h("span", { class: "chev", "aria-hidden": "true", text: "›" })),
+      opt("52-week high / low", h52, mkSw("sf52", "range52", "52-week high and low alerts")),
+      opt("Fast move", hFast, mkSw("sfFast", "fast", "Fast move alert"), fastCfg),
+      opt("50 / 200-day average", hAvg, mkSw("sfAvg", "averages", "50 and 200-day average alerts")),
+      opt("Trading stopped", hHalt, mkSw("sfHalt", "halt", "Trading stopped notice")));
     const pvLow = h("p", { class: "pv", id: "pvLow", "aria-live": "polite" });
     const pvHigh = h("p", { class: "pv", id: "pvHigh", "aria-live": "polite" });
     const pvVol = h("p", { class: "pv", id: "pvVol", "aria-live": "polite" });
@@ -828,14 +860,24 @@ function stockSheet(sym) {
     const no = h("button", { type: "button", class: "btn", text: "No, go back", onclick: () => { confirmBox.hidden = true; form.hidden = false; lowIn.focus(); } });
     const confirmBox = h("div", { class: "confirm", hidden: true, role: "alertdialog", "aria-labelledby": "cfT" }, h("h3", { id: "cfT", text: "This will alert immediately. Save?" }), cfP, h("div", { class: "dact" }, yes, no));
     let pending = null;
-    const read = () => ({ editing: !!v, existing: ex, symbol: symIn.value, on, low: { mode: lowU.value, text: lowIn.value }, high: { mode: highU.value, text: highIn.value }, vol: { mode: volU.value, text: volIn.value }, range52: r52, notes: noteIn.value, prev: v?.prev, last: v?.last, cum: v?.cumVolume });
+    const read = () => ({ editing: !!v, existing: ex, symbol: symIn.value, on, low: { mode: lowU.value, text: lowIn.value }, high: { mode: highU.value, text: highIn.value }, vol: { mode: volU.value, text: volIn.value }, range52: more.range52, fast: { on: more.fast, pct: fastPct.value, minutes: fastMin.value }, averages: more.averages, halt: more.halt, notes: noteIn.value, prev: v?.prev, last: v?.last, cum: v?.cumVolume });
     function calc() {
       const r = L.checkStockForm(read());
       const line = (el, res, none, ok) => { el.textContent = res.state === "ok" ? ok : res.state === "error" ? res.err : none; el.classList.toggle("bad", res.state === "error"); };
       line(pvLow, r.low, "No LOW alert", r.low.state === "ok" ? L.thresholdSentence("low", r.low, v?.prev) : "");
       line(pvHigh, r.high, "No HIGH alert", r.high.state === "ok" ? L.thresholdSentence("high", r.high, v?.prev) : "");
       line(pvVol, r.vol, "No volume alert", r.vol.state === "ok" ? L.volumeSentence(r.vol, v?.cumVolume) : "");
-      pv52.textContent = L.range52Sentence(r52, v?.w52);
+      const w = v?.w52;
+      const m52 = L.range52Model(w);
+      h52.textContent = m52 ? "Above $" + L.money(m52.high) + " or below $" + L.money(m52.low) : "Levels load from the official daily prices";
+      hFast.textContent = more.fast ? "Alert when the price moves " + (fastPct.value || "?") + "% up or down within " + fastMin.value + " minutes" : "Sudden moves between your levels";
+      fastCfg.hidden = !more.fast;
+      hAvg.textContent = Number.isFinite(w?.ma50) || Number.isFinite(w?.ma200)
+        ? "Crosses " + [Number.isFinite(w?.ma50) ? "$" + L.money(w.ma50) + " (50-day)" : "", Number.isFinite(w?.ma200) ? "$" + L.money(w.ma200) + " (200-day)" : ""].filter(Boolean).join(" or ")
+        : "Levels load from the official daily prices";
+      hHalt.textContent = "No trades for 5 minutes in market hours (possible halt). Information only.";
+      const on = L.moreOn({ range52: more.range52, fast: more.fast ? { pct: fastPct.value, minutes: fastMin.value } : null, averages: more.averages, halt: more.halt });
+      moreSum.textContent = on.length ? "· " + on.map((t) => t.split(" ")[0]).join(" · ") : "· none on";
       pvNote.textContent = r.vol.state === "ok" && r.vol.mode === "multiple" && L.usualVolumeWaits(!!v, v?.baseline) ? L.USUAL_VOLUME_NOTE : "";
       return r;
     }
@@ -866,7 +908,8 @@ function stockSheet(sym) {
       const r = calc();
       if (r.err) {
         err.textContent = r.err;
-        ({ symbol: symIn, low: lowIn, high: highIn, vol: volIn }[r.field] || symIn).focus();
+        if (r.field === "fast") moreBox.open = true;
+        ({ symbol: symIn, low: lowIn, high: highIn, vol: volIn, fast: fastPct }[r.field] || symIn).focus();
         return;
       }
       if (v && !r.changed) { closeSheet(); toast("No changes to save."); return; }
@@ -876,9 +919,9 @@ function stockSheet(sym) {
       h("div", { class: "field" }, h("label", { for: "sfLow", text: "LOW alert (optional)" }), h("div", { class: "frow" }, lowIn, lowU), pvLow),
       h("div", { class: "field" }, h("label", { for: "sfHigh", text: "HIGH alert (optional)" }), h("div", { class: "frow" }, highIn, highU), pvHigh),
       h("div", { class: "field" }, h("label", { for: "sfVol", text: "Volume alert (optional)" }), h("div", { class: "frow" }, volIn, volU), pvVol, pvNote),
-      h("div", { class: "field" }, h("span", { class: "lbl", text: "52-week alerts (optional)" }), sw52, pv52),
+      moreBox,
       h("div", { class: "field" }, h("label", { for: "sfNote", text: "Note (optional)" }), noteIn),
-      h("p", { class: "sm", text: "Set at least one of LOW, HIGH, Volume or 52-week. LOW must be below HIGH." + (v ? "" : " The symbol is checked with the data source.") }),
+      h("p", { class: "sm", text: "Set at least one of LOW, HIGH, Volume or More alerts. LOW must be below HIGH." + (v ? "" : " The symbol is checked with the data source.") }),
       err, h("div", { class: "dact" }, save, h("button", { type: "button", class: "btn", text: "Cancel", onclick: cancelSheet })));
     form.addEventListener("input", () => { err.textContent = ""; calc(); });
     form.addEventListener("change", () => calc());

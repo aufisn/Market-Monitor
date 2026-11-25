@@ -9,7 +9,7 @@
 
 export type TradingDate = string;
 export type Symbol = string;
-export type RuleKind = "HIGH" | "LOW" | "VOLUME" | "HIGH52" | "LOW52";
+export type RuleKind = "HIGH" | "LOW" | "VOLUME" | "HIGH52" | "LOW52" | "FAST" | "MA50" | "MA200";
 /** Which side of the price a price rule watches (HIGH52 / LOW52 are the 52-week levels). */
 export const priceSide = (r: RuleKind): "HIGH" | "LOW" | undefined =>
   r === "HIGH" || r === "HIGH52" ? "HIGH" : r === "LOW" || r === "LOW52" ? "LOW" : undefined;
@@ -75,6 +75,11 @@ export type ThresholdInput =
   | { mode: "dollar"; value: number }
   | { mode: "percent"; value: number }; // % from Previous Close, signed
 
+export interface FastInput {
+  pct: number; // 0.5-50
+  minutes: 5 | 10 | 15 | 30;
+}
+
 export type VolumeInput =
   | { mode: "multiple"; value: number } // x AvgCum(t), default 2.0
   | { mode: "absolute"; value: number }; // shares
@@ -87,6 +92,12 @@ export interface StockConfig {
   volume?: VolumeInput;
   /** One switch for both 52-week alerts (HIGH52 and LOW52). */
   range52?: boolean;
+  /** Fast move: the price moves `pct` % up or down within `minutes` (FAST). */
+  fast?: FastInput;
+  /** One switch for the 50- and 200-day average crossings (MA50, MA200). */
+  averages?: boolean;
+  /** "Trading stopped" notice: no trades for a while in market hours (information only, no rule state). */
+  halt?: boolean;
   mutedUntilMs?: number;
   paused?: boolean;
   notes?: string;
@@ -161,6 +172,12 @@ export interface MarketState {
   lastPollMs?: number;
   recentMinuteCloses?: number[]; // last 5, for the FR-3.4 median check
   w52?: YearRange;
+  /** [minute start ms, last price in that minute], newest last, about 31 minutes (fast move). */
+  minutePrices?: [number, number][];
+  /** Set while a "trading stopped" notice is open: the time of the last trade before the stop. */
+  haltLastTradeMs?: number;
+  /** Only on the copy carried by an alert event: the market's (SPY) move today in %, when it is at least 1%. */
+  marketMovePct?: number;
 }
 
 /**
@@ -175,6 +192,11 @@ export interface YearRange {
   low?: number;
   lowDate?: TradingDate;
   firstDate?: TradingDate; // oldest bar used (shows "since listing" when the stock is younger than a year)
+  /** Simple averages of the last 50 / 200 official closes (missing with fewer sessions). */
+  ma50?: number;
+  ma200?: number;
+  /** Close of the session before `date` (decides which way an average crossing counts). */
+  lastClose?: number;
 }
 
 export interface Baseline {
@@ -260,6 +282,9 @@ export type OutboundEvent =
   | { type: "READY"; date: TradingDate; info: Record<string, unknown> }
   | { type: "SESSION_ENDED"; date: TradingDate; counts: Record<string, number>; eod?: EodSummary }
   | { type: "OPS_NOTICE"; code: string; detail: string }
+  /** Information only: no trades for a while in market hours (possible halt), and trading again. */
+  | { type: "HALT"; symbol: Symbol; lastPrice?: number; lastTradeMs: number; minutes: number }
+  | { type: "RESUMED"; symbol: Symbol; price: number; tMs: number }
   | { type: "TEST_ALERT" };
 
 /** Priority for the send queue (FR-5.4): lower sends first. */
@@ -274,6 +299,8 @@ export const EVENT_PRIORITY: Record<OutboundEvent["type"], number> = {
   READY: 3,
   SESSION_ENDED: 3,
   OPS_NOTICE: 3,
+  HALT: 0,
+  RESUMED: 2,
 };
 
 export interface Notifier {

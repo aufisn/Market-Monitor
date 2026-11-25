@@ -29,10 +29,10 @@ const mk = (symbol, o) => ({ symbol, enabled: true, ...o });
 const stocks = [
   mk("AAPL", { high: { mode: "dollar", value: 200 }, low: { mode: "dollar", value: 180 }, volume: { mode: "multiple", value: 2 } }),
   mk("JPM", { high: { mode: "percent", value: 5 }, low: { mode: "percent", value: -5 } }),
-  mk("TSLA", { high: { mode: "dollar", value: 260 }, low: { mode: "dollar", value: 225 }, volume: { mode: "absolute", value: 30000000 } }),
+  mk("TSLA", { high: { mode: "dollar", value: 260 }, low: { mode: "dollar", value: 225 }, volume: { mode: "absolute", value: 30000000 }, range52: true, fast: { pct: 3, minutes: 15 }, halt: true }),
   mk("AMZN", { high: { mode: "dollar", value: 190 }, low: { mode: "dollar", value: 170 } }),
   mk("NVDA", { high: { mode: "dollar", value: 145 }, low: { mode: "dollar", value: 130 }, volume: { mode: "multiple", value: 2 }, range52: true }),
-  mk("MSFT", { high: { mode: "dollar", value: 435 }, low: { mode: "dollar", value: 420 } }),
+  mk("MSFT", { high: { mode: "dollar", value: 435 }, low: { mode: "dollar", value: 420 }, halt: true }),
   mk("XOM", { high: { mode: "dollar", value: 118 }, low: { mode: "dollar", value: 104 } }),
   mk("GOOGL", { high: { mode: "dollar", value: 185 }, low: { mode: "dollar", value: 165 } }),
   mk("PENNY", { low: { mode: "dollar", value: 0.38 }, high: { mode: "dollar", value: 0.5 } }),
@@ -42,10 +42,12 @@ const px = { PENNY: [0.4213, 0.4100, 0.4150, 10, 3e6],  AAPL: [190.2, 189.5, 189
 const market = () => Object.entries(px).map(([symbol, [last, prev, open, age, vol]]) => ({
   symbol, date: "2026-11-24", last: { t: Date.now() - age * 1000 * (scenario === "delayed" ? 1 : 1), p: last, s: 100 }, open, dayHigh: Math.max(last, open) + 0.6, dayLow: Math.min(last, open) - 0.7, cumVolume: vol,
   prev: { symbol, date: "2026-11-23", close: prev, high: prev + 1.4, low: prev - 1.9, volume: vol * 4 }, lastPollMs: Date.now() - 12000,
-  ...(symbol === "XOM" ? {} : { w52: { date: "2026-11-24", sessions: symbol === "PLTR" ? 120 : 251, high: symbol === "NVDA" ? 145.3 : +(last * 1.25).toFixed(2), highDate: "2026-03-12", low: +(last * 0.7).toFixed(4), lowDate: "2026-06-02" } }),
+  ...(symbol === "XOM" ? {} : { w52: { date: "2026-11-24", sessions: symbol === "PLTR" ? 120 : 251, high: symbol === "NVDA" ? 145.3 : +(last * 1.25).toFixed(2), highDate: "2026-03-12", low: +(last * 0.7).toFixed(4), lowDate: "2026-06-02", ma50: +(last * 1.04).toFixed(2), ma200: +(last * 0.998).toFixed(2), lastClose: prev } }),
+  ...(symbol === "MSFT" ? { haltLastTradeMs: Date.now() - 7 * MIN } : {}),
   baseline: symbol === "TSLA" ? { status: "BUILDING" } : symbol === "XOM" ? { status: "NO_BASELINE" } : { status: "OK", multiple: 1.4, avgCumNow: vol / 1.4, thresholdShares: Math.round(vol / 1.4 * 2) },
 }));
 const initialRules = () => [
+  { date: "2026-11-24", symbol: "TSLA", rule: "FAST", state: "TRIGGERED", cycle: 1, t0Ms: Date.now() - 3 * MIN, t0Value: 243.1, thresholdAtT0: 251.65, remindersSent: 0, nextReminderMs: Date.now() + 7 * MIN, version: 1 },
   { date: "2026-11-24", symbol: "NVDA", rule: "HIGH", state: "TRIGGERED", cycle: 1, t0Ms: Date.now() - 6 * MIN, t0Value: 145.2, thresholdAtT0: 145, remindersSent: 1, nextReminderMs: Date.now() + 4 * MIN, version: 3 },
   { date: "2026-11-24", symbol: "MSFT", rule: "LOW", state: "ACKNOWLEDGED", cycle: 1, t0Ms: Date.now() - 50 * MIN, t0Value: 419.9, thresholdAtT0: 420, remindersSent: 2, ackMs: Date.now() - 30 * MIN, ackBy: "telegram", version: 5 },
 ];
@@ -82,7 +84,7 @@ async function api(req, res, url) {
     const b = await body(req);
     if (stocks.find((s) => s.symbol === b.symbol)) return J(res, 409, { error: "DUPLICATE", message: b.symbol + " is already on the watchlist." });
     if (b.symbol === "ZZZZ") return J(res, 422, { error: "UNKNOWN_SYMBOL", message: "ZZZZ was not found in the data source." });
-    if (!b.high && !b.low && !b.volume) return J(res, 422, { error: "INVALID_INPUT", message: "Set at least one of LOW, HIGH or volume." });
+    if (!b.high && !b.low && !b.volume && !b.range52 && !b.fast && !b.averages) return J(res, 422, { error: "INVALID_INPUT", message: "Set at least one of LOW, HIGH or volume." });
     stocks.push({ symbol: b.symbol, enabled: true, ...(b.high ? { high: b.high } : {}), ...(b.low ? { low: b.low } : {}), ...(b.volume ? { volume: b.volume } : {}), ...(b.notes ? { notes: b.notes } : {}), ...(b.paused ? { paused: true } : {}) });
     return J(res, 201, { stock: stocks.at(-1) });
   }
@@ -94,7 +96,7 @@ async function api(req, res, url) {
     if (m === "DELETE") { stocks.splice(i, 1); return J(res, 200, { ok: true }); }
     const b = await body(req);
     const next = { ...stocks[i] };
-    for (const k of ["high", "low", "volume"]) if (b[k] !== undefined) { if (b[k] === null) delete next[k]; else next[k] = b[k]; }
+    for (const k of ["high", "low", "volume", "range52", "fast", "averages", "halt"]) if (b[k] !== undefined) { if (b[k] === null || b[k] === false) delete next[k]; else next[k] = b[k]; }
     if (b.paused !== undefined) next.paused = b.paused;
     if (b.notes !== undefined) { if (b.notes === null || b.notes === "") delete next.notes; else next.notes = b.notes; }
     if (sym === "PLTR" && b.paused !== undefined && scenario === "failswitch") return J(res, 500, { error: "INTERNAL", message: "Something went wrong on the server." });

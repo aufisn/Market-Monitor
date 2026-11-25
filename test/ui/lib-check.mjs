@@ -52,7 +52,20 @@ assert.deepEqual(L.checkStockForm({ ...base, range52: true }).body, { symbol: "N
 assert.equal(L.checkStockForm({ ...ed, range52: true }).body.range52, true);
 assert.equal("range52" in L.checkStockForm({ ...ed, notes: "x" }).body, false);
 assert.equal(L.ruleLabel("HIGH52"), "52W HIGH"); assert.equal(L.ruleLabel("LOW"), "LOW");
-assert.deepEqual(L.range52Model({ high: 200, low: 100, sessions: 251 }, 150), { low: 100, high: 200, lowDate: undefined, highDate: undefined, pos: 50, short: false, beyond: false });
+assert.deepEqual(L.range52Model({ high: 200, low: 100, sessions: 251 }, 150), { low: 100, high: 200, lowDate: undefined, highDate: undefined, pos: 50, short: false, beyond: false, ma50: null, ma200: null });
+assert.deepEqual([L.range52Model({ high: 200, low: 100, sessions: 251, ma50: 175, ma200: 250 }, 150).ma50, L.range52Model({ high: 200, low: 100, sessions: 251, ma200: 250 }, 150).ma200], [75, null]);
 assert.equal(L.range52Model({ high: 200, low: 100, sessions: 120 }, 210).beyond, true);
 assert.match(L.range52Sentence(true, { high: 200, low: 100, sessions: 251 }), /above the 52-week high \$200\.00 or below the 52-week low \$100\.00/);
+// More alerts (step 7): fast move settings, averages, halt; halt alone is not an alert
+assert.deepEqual(L.checkStockForm({ ...base, fast: { on: true, pct: "2,5", minutes: "10" }, halt: true }).body, { symbol: "NVDA", fast: { pct: 2.5, minutes: 10 }, halt: true });
+assert.equal(L.checkStockForm({ ...base, fast: { on: true, pct: "0.1", minutes: "10" } }).field, "fast");
+assert.match(L.checkStockForm({ ...base, halt: true }).err, /at least one/);
+assert.deepEqual(L.checkStockForm({ ...base, averages: true }).body, { symbol: "NVDA", averages: true });
+assert.equal(L.checkStockForm({ ...ed, fast: { on: false, pct: "3", minutes: "15" }, averages: true }).body.averages, true);
+assert.equal("fast" in L.checkStockForm({ ...ed, notes: "x" }).body, false);
+assert.deepEqual(L.moreOn({ range52: true, fast: { pct: 3, minutes: 15 }, halt: true }), ["52W", "Fast 3%/15m", "Halt"]);
+assert.equal(L.attentionLine({ active: [] }), null);
+assert.deepEqual(L.attentionLine({ active: [{ rule: "FAST", t0Ms: 2, t0Value: 96.6, thresholdAtT0: 100 }, { rule: "HIGH", t0Ms: 1, thresholdAtT0: 110 }], fast: { minutes: 15 } }), { tone: "red", title: "Fast move ▼3.4% within 15 min", sub: "and 1 more alert" });
+assert.equal(L.attentionLine({ active: [{ rule: "MA200", t0Ms: 1, t0Value: 99, thresholdAtT0: 100 }] }).title, "Crossed below the 200-day average");
+assert.equal(L.attentionLine({ active: [], haltSince: Date.parse("2026-11-25T15:47:00Z") }).title, "No trades since 10:47 ET");
 console.log("lib-check ok");

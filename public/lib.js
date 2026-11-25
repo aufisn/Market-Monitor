@@ -177,14 +177,47 @@ export const FRESH_LABEL = {
 const ACTIVE = new Set(["TRIGGERED", "REPEATING"]);
 export const isActiveRule = (r) => ACTIVE.has(r.state);
 /** How a rule is named on screen. */
-export const ruleLabel = (r) => ({ HIGH52: "52W HIGH", LOW52: "52W LOW" })[r] || r;
+export const ruleLabel = (r) => ({ HIGH52: "52W HIGH", LOW52: "52W LOW", FAST: "Fast move", MA50: "50-day avg", MA200: "200-day avg" })[r] || r;
+
+const arrowPct = (p) => (p >= 0 ? "▲" : "▼") + Math.abs(p).toFixed(1) + "%";
+/** The one coloured line at the top of a card (design step 7), or null when nothing needs attention.
+    Red = an alert to acknowledge (newest first), amber = trading stopped. */
+export function attentionLine(vm, nowMs) {
+  const act = (vm.active || []).slice().sort((a, b) => (b.t0Ms || 0) - (a.t0Ms || 0));
+  if (act.length) {
+    const r = act[0];
+    const thr = r.thresholdAtT0, v = r.t0Value;
+    let title;
+    if (r.rule === "FAST") title = "Fast move " + (thr > 0 && Number.isFinite(v) ? arrowPct((v / thr - 1) * 100) : "") + (vm.fast ? " within " + vm.fast.minutes + " min" : "");
+    else if (r.rule === "MA50" || r.rule === "MA200") title = "Crossed " + (v < thr ? "below" : "above") + " the " + (r.rule === "MA50" ? "50" : "200") + "-day average";
+    else if (r.rule === "VOLUME") title = "Volume alert";
+    else if (r.rule === "HIGH52" || r.rule === "LOW52") title = "New 52-week " + (r.rule === "HIGH52" ? "high" : "low");
+    else title = r.rule + " $" + money(thr) + " crossed";
+    const more = act.length > 1 ? "and " + (act.length - 1) + " more alert" + (act.length > 2 ? "s" : "") : "";
+    return { tone: "red", title: title.trim(), sub: more };
+  }
+  if (Number.isFinite(vm.haltSince)) return { tone: "amber", title: "No trades since " + hm(vm.haltSince, TZ_ET) + " ET", sub: "Possible trading halt" };
+  return null;
+}
+
+/** Short labels of the "More alerts" that are on, for the folded form line and the card. */
+export function moreOn(s) {
+  const on = [];
+  if (s.range52) on.push("52W");
+  if (s.fast) on.push("Fast " + s.fast.pct + "%/" + s.fast.minutes + "m");
+  if (s.averages) on.push("Avg");
+  if (s.halt) on.push("Halt");
+  return on;
+}
+export const FAST_MINUTES = [5, 10, 15, 30];
 
 /** 52-week range bar: position 0..100 of the last price, or null. "Range since listing" when under a year of history. */
 export function range52Model(w52, last) {
   if (!w52 || !(w52.high > 0) || !(w52.low > 0) || w52.high < w52.low) return null;
   const span = w52.high - w52.low;
   const pos = Number.isFinite(last) ? (span > 0 ? Math.max(0, Math.min(100, ((last - w52.low) / span) * 100)) : 50) : null;
-  return { low: w52.low, high: w52.high, lowDate: w52.lowDate, highDate: w52.highDate, pos, short: (w52.sessions || 0) < 240, beyond: Number.isFinite(last) && (last > w52.high || last < w52.low) };
+  const at = (v) => (Number.isFinite(v) && span > 0 && v >= w52.low && v <= w52.high ? ((v - w52.low) / span) * 100 : null);
+  return { low: w52.low, high: w52.high, lowDate: w52.lowDate, highDate: w52.highDate, pos, short: (w52.sessions || 0) < 240, beyond: Number.isFinite(last) && (last > w52.high || last < w52.low), ma50: at(w52.ma50), ma200: at(w52.ma200) };
 }
 /** Sentence under the 52-week switch in the form. */
 export function range52Sentence(on, w52) {
@@ -238,7 +271,8 @@ export function buildVM(stock, market, rules, settings, nowMs, marketOpen, flags
   return {
     sym: stock.symbol, stock, status, near, muted, paused, pausedAll: !!flags.pausedAll, notes: stock.notes || "",
     last, lastT, ageS, fresh: fr, prev, open: market?.open, dayHigh: market?.dayHigh, dayLow: market?.dayLow, cumVolume: market?.cumVolume,
-    high: hi, low: lo, hiP, loP, vol: stock.volume, range52: !!stock.range52, w52: market?.w52, volAvgMultiple: market?.baseline?.multiple, baseline: market?.baseline,
+    high: hi, low: lo, hiP, loP, vol: stock.volume, range52: !!stock.range52, w52: market?.w52,
+    fast: stock.fast, averages: !!stock.averages, halt: !!stock.halt, haltSince: market?.haltLastTradeMs, volAvgMultiple: market?.baseline?.multiple, baseline: market?.baseline,
     changeAbs: Number.isFinite(last) && Number.isFinite(prev) ? last - prev : NaN,
     changePct: Number.isFinite(last) && Number.isFinite(prev) && prev !== 0 ? ((last - prev) / prev) * 100 : NaN,
     nearest, active, acked, atClose,
@@ -418,7 +452,12 @@ export function checkStockForm(f) {
   for (const [k, r] of [["low", low], ["high", high], ["vol", vol]]) if (r.state === "error") fail(k, (k === "vol" ? "Volume" : WHICH[k]) + ": " + r.err);
   // both are percent or both are dollars: compare the numbers even when Prev Close is unknown
   if (low.state === "ok" && high.state === "ok" && low.mode === high.mode && low.value >= high.value) fail("low", "LOW must be below HIGH.");
-  if (low.state !== "ok" && high.state !== "ok" && vol.state !== "ok" && !f.range52) fail("low", "Set at least one alert: LOW, HIGH, Volume or 52-week.");
+  const fastOn = !!f.fast?.on;
+  const fastPct = Number(String(f.fast?.pct ?? "").replace(",", "."));
+  const fastMin = Number(f.fast?.minutes);
+  if (fastOn && !(fastPct >= 0.5 && fastPct <= 50)) fail("fast", "Fast move: type a percent between 0.5 and 50.");
+  if (fastOn && !FAST_MINUTES.includes(fastMin)) fail("fast", "Fast move: choose 5, 10, 15 or 30 minutes.");
+  if (low.state !== "ok" && high.state !== "ok" && vol.state !== "ok" && !f.range52 && !fastOn && !f.averages) fail("low", "Set at least one alert: LOW, HIGH, Volume or one of More alerts.");
   if (out.err) return out;
   const th = (r) => (r.state === "ok" ? { mode: r.mode, value: r.value } : null);
   const notes = (f.notes || "").trim();
@@ -428,6 +467,9 @@ export function checkStockForm(f) {
     if (high.state === "ok") body.high = th(high);
     if (vol.state === "ok") body.volume = th(vol);
     if (f.range52) body.range52 = true;
+    if (fastOn) body.fast = { pct: fastPct, minutes: fastMin };
+    if (f.averages) body.averages = true;
+    if (f.halt) body.halt = true;
     if (notes) body.notes = notes;
     if (!f.on) body.paused = true;
     out.body = body; out.changed = true;
@@ -440,6 +482,10 @@ export function checkStockForm(f) {
     if (!sameTh(nv, ex[key])) body[key] = nv; // null removes the alert
   }
   if (!!f.range52 !== !!ex.range52) body.range52 = !!f.range52;
+  const nf = fastOn ? { pct: fastPct, minutes: fastMin } : null;
+  if (JSON.stringify(nf) !== JSON.stringify(ex.fast || null)) body.fast = nf;
+  if (!!f.averages !== !!ex.averages) body.averages = !!f.averages;
+  if (!!f.halt !== !!ex.halt) body.halt = !!f.halt;
   if (notes !== (ex.notes || "")) body.notes = notes || null;
   if (f.on === !!ex.paused) body.paused = !f.on;
   out.body = body; out.changed = Object.keys(body).length > 0;

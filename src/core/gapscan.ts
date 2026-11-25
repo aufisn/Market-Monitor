@@ -20,7 +20,9 @@ export function gapWindow(lastPollMs: number | null, nowMs: number, openMs: numb
 
 export interface GapRule {
   symbol: string;
-  rule: RuleKind; // a price rule: HIGH, LOW, HIGH52 or LOW52
+  rule: RuleKind; // a price rule: HIGH, LOW, HIGH52, LOW52, MA50 or MA200
+  /** Direction for rules whose side is not fixed by the kind (the averages). */
+  side?: "HIGH" | "LOW";
   threshold: number;
   state?: RuleState; // missing = never evaluated = ARMED
 }
@@ -41,7 +43,7 @@ export function scanGap(rules: GapRule[], bars: Record<string, Bar[]>, spikeHold
   for (const r of rules) {
     if (r.state && r.state.state !== "ARMED") continue;
     const list = [...(bars[r.symbol] ?? [])].sort((a, b) => a.t - b.t);
-    const up = priceSide(r.rule) === "HIGH";
+    const up = (r.side ?? priceSide(r.rule)) === "HIGH";
     const val = (b: Bar) => (up ? b.h : b.l);
     const crossed = (b: Bar) => (up ? b.h >= r.threshold : b.l <= r.threshold);
     const closes = [...(seedCloses[r.symbol] ?? [])];

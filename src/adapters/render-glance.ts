@@ -11,13 +11,14 @@
 import { sessionFor } from "../core/calendar";
 import type { Baseline, EodAlert, EodStock, MarketState, OutboundEvent, RuleKind, RuleState, StockConfig } from "../core/ports";
 import { avgCumAt, resolveThreshold } from "../core/rules";
+import { fastMovePct } from "../core/signals";
 import { MIN, nyLocalToUtc } from "../core/time";
 import {
   encodeAck, encodeAckMove, encodeAckStock, encodeBriefDetails, encodeCancelChooser, encodeChooser, encodeDetails,
   encodeMute, encodeSeen, encodeTyped,
 } from "./callbacks";
 import {
-  ICON, RULE_LABEL, both, e, etOnly, f2, glanceWidth, minutesText, mult, mult1, num, pack, pctOf, priceDecimals, sgn, shortDate, sp, vol, wrapPlain,
+  ICON, RULE_LABEL, arrowPct, both, e, etOnly, f2, glanceWidth, minutesText, mult, mult1, num, pack, pctOf, priceDecimals, sgn, shortDate, sp, vol, wrapPlain,
 } from "./glance-fmt";
 import type { Button, Rendered } from "./telegram";
 
@@ -99,6 +100,12 @@ function firstAlert(ev: Extract<OutboundEvent, { type: "FIRST_ALERT" }>, ctx: Gl
     const f = volumeFacts(baselineOf(ctx, r.symbol), r.date, t0, r.t0Value ?? m.cumVolume);
     lines.push(`🚨 NEW 📊 <b>${rname(r)}</b> ${f.multiple !== undefined ? mult1(f.multiple) : vol(f.cum)}`);
     lines.push(...pack([`IEX volume ${vol(f.cum)}`, f.avg !== undefined ? `avg ${vol(f.avg)}` : `limit ${vol(ev.threshold)}`]));
+  } else if (r.rule === "FAST") {
+    const px = r.t0Value ?? m.last?.p;
+    const mv = fastMovePct(r.t0Value, r.thresholdAtT0);
+    const mins = stockOf(ctx, r.symbol)?.fast?.minutes;
+    lines.push(`🚨 NEW ⚡ <b>${rname(r)}</b> ${mv !== undefined ? arrowPct(mv) : ""}${mins ? ` in ${mins} min` : ""}`.trimEnd());
+    lines.push(...pack([num(px), px !== undefined && m.prev ? `day ${arrowPct(((px - m.prev.close) / m.prev.close) * 100)}` : ""]));
   } else {
     const px = r.t0Value ?? m.last?.p;
     lines.push(`🚨 NEW ${ICON[r.rule]} <b>${rname(r)}</b> ${num(px)}`);
@@ -106,7 +113,9 @@ function firstAlert(ev: Extract<OutboundEvent, { type: "FIRST_ALERT" }>, ctx: Gl
     const chg = px !== undefined && m.prev ? pctOf(px, m.prev.close) : undefined;
     lines.push(...pack([chg ?? "", f.multiple !== undefined ? `IEX vol ${mult1(f.multiple)}` : ""]));
     if (is52(r.rule)) lines.push(w52Line(r.rule, m));
+    if (isAvg(r.rule)) lines.push(avgLine(r));
   }
+  lines.push(...marketLine(m));
   lines.push(both(t0));
   return { text: body(lines), buttons: alertKeyboard(r, ctx) };
 }
@@ -117,13 +126,47 @@ function lateAlert(ev: Extract<OutboundEvent, { type: "LATE_ALERT" }>, ctx: Glan
   const shown = r.rule === "VOLUME" ? vol(ev.threshold) : num(ev.threshold);
   const lines = [`⏱ <b>LATE</b> ${ICON[r.rule]} <b>${rname(r)}</b> ${shown}`];
   if (r.rule === "VOLUME") lines.push(`Reached by ${etOnly(ev.barTimeMs)}`);
-  else lines.push(...pack([`Touched ${etOnly(ev.barTimeMs)}`, `bar ${r.rule === "HIGH" || r.rule === "HIGH52" ? "high" : "low"} ${num(ev.barPrice)}`]));
+  else lines.push(...pack([`Touched ${etOnly(ev.barTimeMs)}`, `bar ${ev.barPrice >= ev.threshold ? "high" : "low"} ${num(ev.barPrice)}`]));
   lines.push(...pack([`Found ${etOnly(found)}`, "runs were missed"]));
+  lines.push(...marketLine(ev.market));
   lines.push(both(ev.barTimeMs));
   return { text: body(lines), buttons: alertKeyboard(r, ctx) };
 }
 
-const levelText = (r: RuleState): string => (r.rule === "VOLUME" ? `≥ ${vol(r.thresholdAtT0)}` : num(r.thresholdAtT0));
+const levelText = (r: RuleState): string => {
+  if (r.rule === "VOLUME") return `≥ ${vol(r.thresholdAtT0)}`;
+  if (r.rule === "FAST") {
+    const mv = fastMovePct(r.t0Value, r.thresholdAtT0);
+    return mv !== undefined ? arrowPct(mv) : "";
+  }
+  return num(r.thresholdAtT0);
+};
+const isAvg = (r: RuleKind): boolean => r === "MA50" || r === "MA200";
+/** `Crossed below the 200-day avg 236.10` */
+function avgLine(r: RuleState): string {
+  const below = r.t0Value !== undefined && r.thresholdAtT0 !== undefined && r.t0Value < r.thresholdAtT0;
+  return `Crossed ${below ? "below" : "above"} the ${r.rule === "MA50" ? "50" : "200"}-day avg ${num(r.thresholdAtT0)}`;
+}
+/** `Market: SPY ▼1.6%`, only when the engine attached a market move (at least 1%). */
+const marketLine = (m: MarketState | undefined): string[] => (m?.marketMovePct !== undefined ? [`Market: SPY ${arrowPct(m.marketMovePct)}`] : []);
+
+// ------------------------------------------------------------ trading stopped / trading again (information only)
+function halt(ev: Extract<OutboundEvent, { type: "HALT" }>, ctx: GlanceCtx): Rendered {
+  return {
+    text: body([
+      `⛔ <b>${e(ev.symbol)}</b> no trades for ${ev.minutes} min`,
+      `Last ${num(ev.lastPrice)} at ${etOnly(ev.lastTradeMs)}`,
+      "Possible halt. A message follows",
+      "when it trades again.",
+      both(ctx.nowMs),
+    ]),
+    buttons: ctx.dashboardUrl ? [dash(ctx)] : undefined,
+  };
+}
+const resumed = (ev: Extract<OutboundEvent, { type: "RESUMED" }>): Rendered => ({
+  text: body([`▶️ <b>${e(ev.symbol)}</b> trading again ${num(ev.price)}`, both(ev.tMs)]),
+  silent: true,
+});
 
 /** `Old 52W high 488.54 (12 Mar)`: the level that was passed. */
 function w52Line(rule: RuleKind, m: MarketState): string {
@@ -149,6 +192,7 @@ function reminder(ev: Extract<OutboundEvent, { type: "REMINDER" }>, ctx: GlanceC
       ...pack([`${ICON[r.rule]} ${rname(r)} ${levelText(r)}`, `${open(r)} open`]),
       ...pack(now),
       ...inside,
+      ...marketLine(ev.market),
       both(ctx.nowMs),
     ];
     return { text: body(lines), buttons: alertKeyboard(r, ctx) };
@@ -496,6 +540,8 @@ export function renderGlanceAll(ev: OutboundEvent, ctx: GlanceCtx): Rendered[] {
     case "SESSION_ENDED": return sessionEnded(ev);
     case "OPS_NOTICE": return [opsNotice(ev, ctx)];
     case "TEST_ALERT": return [testAlert(ctx)];
+    case "HALT": return [halt(ev, ctx)];
+    case "RESUMED": return [resumed(ev)];
   }
 }
 

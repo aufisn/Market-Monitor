@@ -267,3 +267,33 @@ input[readonly] { background: var(--surface2); border-style: dashed; color: var(
 .r52bar .m.beyond { color: var(--bad); }
 .r52l { display: flex; justify-content: space-between; font-size: .72rem; color: var(--muted); }
 .field .lbl { display: block; font-weight: 700; font-size: .9rem; }
+.r52bar .tick { position: absolute; top: .2rem; width: 2px; height: .9rem; background: var(--muted); transform: translateX(-1px); }
+.r52bar .tl { position: absolute; top: -.75rem; left: 50%; transform: translateX(-50%); font-size: .62rem; color: var(--muted); white-space: nowrap; }
+.r52bar .tick.lo .tl { top: auto; bottom: -.8rem; } /* 200d label under the bar so close averages never overlap */
+.r52bar { margin: .8rem .5rem .9rem; }
+/* attention line (design step 7): one line, only while something needs attention */
+.say { display: flex; align-items: center; gap: var(--s2); border-radius: .6rem; padding: .45rem .6rem; margin: .4rem 0; font-size: .85rem; }
+.say.red { background: var(--bad-bg); }
+.say.amber { background: var(--warn-bg); }
+.say b { display: block; }
+.say span { color: var(--muted); font-size: .78rem; }
+.say .btn { margin-left: auto; flex: none; min-height: 2.2rem; padding: .2rem .7rem; }
+.chips { display: flex; flex-wrap: wrap; gap: .3rem; margin: .4rem 0 .1rem; }
+.mchip { font-size: .72rem; border: 1px solid var(--muted); border-radius: 99px; padding: 0 .5rem; color: var(--muted); }
+/* "More alerts" in the form */
+.more { border-top: 1px solid var(--line); margin: .3rem 0 .6rem; }
+.more > summary { list-style: none; cursor: pointer; display: flex; justify-content: space-between; align-items: center; min-height: 2.75rem; font-weight: 700; }
+.more > summary::-webkit-details-marker { display: none; }
+.more > summary .s { font-weight: 400; font-size: .8rem; color: var(--muted); }
+.more > summary .chev { color: var(--muted); transition: transform .2s; }
+.more[open] > summary .chev { transform: rotate(90deg); }
+.more .opt { display: flex; align-items: center; gap: var(--s2); padding: .4rem 0; border-bottom: 1px solid var(--line); }
+.more .opt:last-child { border-bottom: 0; }
+.more .txt { flex: 1; min-width: 0; }
+.more .nm { font-weight: 600; font-size: .92rem; }
+.more .hint { margin: 0; font-size: .78rem; color: var(--muted); }
+.more .mini { display: flex; align-items: center; gap: .35rem; flex-wrap: wrap; margin-top: .3rem; font-size: .8rem; color: var(--muted); }
+.more .mini[hidden] { display: none; }
+.more .mini { flex-wrap: nowrap; }
+.more .mini .in { width: 3.6rem; padding: .3rem .4rem; min-height: 2.5rem; }
+.more .mini select.in { width: auto; }

@@ -24,6 +24,13 @@ const barDate = (b: Bar): string => new Date(b.t).toISOString().slice(0, 10); //
 
 export function buildYearRange(date: TradingDate, bars: Bar[] | undefined): YearRange {
   const r: YearRange = { date, sessions: 0 };
+  const closes = [...(bars ?? [])].filter((b) => barDate(b) < date && b.c > 0).sort((a, b) => a.t - b.t).map((b) => b.c);
+  const avg = (n: number) => (closes.length >= n ? closes.slice(-n).reduce((s, c) => s + c, 0) / n : undefined);
+  const ma50 = avg(50);
+  const ma200 = avg(200);
+  if (ma50 !== undefined) r.ma50 = ma50;
+  if (ma200 !== undefined) r.ma200 = ma200;
+  if (closes.length) r.lastClose = closes[closes.length - 1]!;
   for (const b of bars ?? []) {
     const d = barDate(b);
     if (d >= date || !(b.h > 0) || !(b.l > 0)) continue;

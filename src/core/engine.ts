@@ -15,6 +15,7 @@ import { EVENT_PRIORITY, priceSide } from "./ports";
 import type { Bar, Baseline, EodSummary, MarketData, MarketState, OutboundEvent, RuleKind, RuleState, Settings, Snapshot, StockConfig, Store, TradingDate, YearRange } from "./ports";
 import { evaluatePrice, evaluateVolume, isFlaggedTrade, priceInsideBuffer, resolveThreshold, volumeInsideBuffer } from "./rules";
 import { MIN, nyDate, nyParts } from "./time";
+import { MARKET_SYMBOL, addMinutePrice, averageSide, evaluateFast, haltStep, marketMove } from "./signals";
 import { W52_PER_RUN_PRE_OPEN, W52_PER_RUN_SESSION, buildYearRange, high52Threshold, low52Threshold, needYearRange, yearWindow } from "./yearrange";
 
 export interface Ports {
@@ -45,8 +46,8 @@ const READY_BEFORE_OPEN_MS = 30 * MIN; // 09:00 ET
 const PRE_OPEN_WINDOW_MS = 150 * MIN; // 07:00 ET
 const POST_CLOSE_WINDOW_MS = 60 * MIN; // closing() works until here; the end-of-day summary is built inside it
 const PREV_CLOSE_PER_RUN = 12;
-type PriceRule = "HIGH" | "LOW" | "HIGH52" | "LOW52";
-const PRICE_RULES: readonly PriceRule[] = ["HIGH", "LOW", "HIGH52", "LOW52"];
+type PriceRule = "HIGH" | "LOW" | "HIGH52" | "LOW52" | "MA50" | "MA200";
+const PRICE_RULES: readonly PriceRule[] = ["HIGH", "LOW", "HIGH52", "LOW52", "MA50", "MA200"];
 
 // ------------------------------------------------------------ call metering
 interface Meter {
@@ -133,6 +134,7 @@ function refresh(prev: MarketState | undefined, symbol: string, date: TradingDat
   if (minuteClose !== undefined && prev?.lastPollMs !== undefined && Math.floor(nowMs / MIN) > Math.floor(prev.lastPollMs / MIN)) {
     ms.recentMinuteCloses = [...(prev.recentMinuteCloses ?? []), minuteClose].slice(-5);
   }
+  if (ms.last && ms.last.t >= nowMs - 2 * MIN) ms.minutePrices = addMinutePrice(prev?.minutePrices, nowMs, ms.last.p);
   ms.lastPollMs = nowMs;
   return ms;
 }
@@ -189,13 +191,15 @@ async function tick(
     return summary("ok", m);
   }
 
-  // --- poll (retry once, FR-3.9)
+  // --- poll (retry once, FR-3.9); SPY rides along for the market note and the halt check (same call)
+  const polledStocks: StockConfig[] = byName.has(MARKET_SYMBOL) ? active : [...active, { symbol: MARKET_SYMBOL, enabled: true }];
+  const polledSyms = polledStocks.map((s) => s.symbol);
   let snaps: Record<string, Snapshot>;
   try {
     try {
-      snaps = await market.snapshots(active.map((s) => s.symbol));
+      snaps = await market.snapshots(polledSyms);
     } catch {
-      snaps = await market.snapshots(active.map((s) => s.symbol));
+      snaps = await market.snapshots(polledSyms);
     }
   } catch {
     await once(store, m, date, noticeKey("DATA_ERROR", nowMs), { type: "OPS_NOTICE", code: "DATA_ERROR", detail: "Market data request failed twice." }, nowMs);
@@ -203,7 +207,7 @@ async function tick(
   }
 
   // --- Previous Close for stocks that lack it (late additions); capped per run
-  const missingPrev = active.filter((s) => !stored.get(s.symbol)?.prev && snaps[s.symbol]).slice(0, 3);
+  const missingPrev = polledStocks.filter((s) => !stored.get(s.symbol)?.prev && snaps[s.symbol]).slice(0, 3);
   const prevs = await Promise.all(missingPrev.map((s) => market.previousDaily(s.symbol, date).catch(() => null)));
   // --- 52-week range for stocks added during the day (normally built before the open)
   const w52s = await fetchYearRanges(market, needYearRange(active.filter((s) => snaps[s.symbol]), stored, date, W52_PER_RUN_SESSION), date);
@@ -211,7 +215,7 @@ async function tick(
   // --- fold snapshots into market states
   const mem = new Map<string, MarketState>();
   const toWrite: MarketState[] = [];
-  active.forEach((s) => {
+  polledStocks.forEach((s) => {
     const snap = snaps[s.symbol];
     const old = stored.get(s.symbol);
     if (!snap) {
@@ -236,7 +240,14 @@ async function tick(
 
   // --- thresholds for this run
   const prevClose = (sym: string) => mem.get(sym)?.prev?.close;
+  const ruleSide = (s: StockConfig, kind: PriceRule): "HIGH" | "LOW" | undefined =>
+    kind === "MA50" || kind === "MA200" ? averageSide(mem.get(s.symbol)?.w52, kind)?.side : priceSide(kind);
   const priceThr = (s: StockConfig, kind: PriceRule): number | undefined => {
+    if (kind === "MA50" || kind === "MA200") {
+      if (!s.averages) return undefined;
+      const w = mem.get(s.symbol)?.w52;
+      return w?.date === date ? averageSide(w, kind)?.level : undefined;
+    }
     if (kind === "HIGH52" || kind === "LOW52") {
       if (!s.range52) return undefined;
       const w = mem.get(s.symbol)?.w52;
@@ -253,7 +264,7 @@ async function tick(
     for (const s of liveStocks) {
       for (const kind of PRICE_RULES) {
         const thr = priceThr(s, kind);
-        if (thr !== undefined) rules.push({ symbol: s.symbol, rule: kind, threshold: thr, state: rs.get(ruleKey(s.symbol, kind)) });
+        if (thr !== undefined) rules.push({ symbol: s.symbol, rule: kind, side: ruleSide(s, kind), threshold: thr, state: rs.get(ruleKey(s.symbol, kind)) });
       }
     }
     const armed = rules.filter((r) => !r.state || r.state.state === "ARMED");
@@ -266,7 +277,7 @@ async function tick(
         for (const hit of scanGap(armed, bars, set0.spikeHoldPct, seeds)) {
           const cur = rs.get(ruleKey(hit.symbol, hit.rule)) ?? freshState(date, hit.symbol, hit.rule);
           const obs = { crossing: { value: hit.price, touchedAtMs: hit.barTimeMs }, threshold: hit.threshold, insideBuffer: false, held: null };
-          items.push({ s: cur, o: obs, market: mem.get(hit.symbol)!, set: settingsFor(hit.symbol), late: { barTimeMs: hit.barTimeMs, barPrice: hit.price } });
+          items.push({ s: cur, o: obs, market: { ...mem.get(hit.symbol)!, ...(marketMove(mem.get(MARKET_SYMBOL)) !== undefined ? { marketMovePct: marketMove(mem.get(MARKET_SYMBOL)) } : {}) }, set: settingsFor(hit.symbol), late: { barTimeMs: hit.barTimeMs, barPrice: hit.price } });
         }
         for (const [k, v] of await fireAlerts(store, out, items, nowMs)) rs.set(k, v);
       } catch {
@@ -288,7 +299,8 @@ async function tick(
     for (const kind of PRICE_RULES) {
       const thr = priceThr(s, kind);
       if (thr === undefined) continue;
-      const side = priceSide(kind)!;
+      const side = ruleSide(s, kind);
+      if (!side) continue;
       const cur = rs.get(ruleKey(s.symbol, kind));
       const ev = evaluatePrice(side, thr, snap, { sessionOpenMs: session.open, recentCloses: stored.get(s.symbol)?.recentMinuteCloses, spikeHoldPct: set.spikeHoldPct, heldPrice: cur?.heldPrice });
       const lp = ev.lastPrice;
@@ -297,6 +309,13 @@ async function tick(
         inside: priceInsideBuffer(side, lp, thr, set.rearmBufferPricePct),
         back: lp !== undefined && (side === "HIGH" ? lp < thr : lp > thr),
       });
+    }
+    if (s.fast) {
+      const fe = evaluateFast(ms.minutePrices, nowMs, ms.last?.p, s.fast.pct, s.fast.minutes);
+      const cur = rs.get(ruleKey(s.symbol, "FAST"));
+      // The reference of an open alert is kept so the rule stays comparable; a new crossing uses the window's.
+      const thr = fe.reference ?? cur?.thresholdAtT0 ?? ms.last?.p;
+      if (thr !== undefined) rules.push({ kind: "FAST", thr, crossing: fe.crossing, held: null, inside: fe.inside, back: fe.inside });
     }
     if (s.volume) {
       const ve = evaluateVolume(ms.cumVolume, s.volume, baselines.get(s.symbol), minutes, set);
@@ -318,6 +337,34 @@ async function tick(
       else if (step.next !== cur) changes.push({ next: step.next, expected: cur.version });
     }
   }
+  // Market note (SPY) on the copies carried by alert and reminder events
+  const spyPct = marketMove(mem.get(MARKET_SYMBOL));
+  const noted = (x: MarketState): MarketState => (spyPct === undefined || x.symbol === MARKET_SYMBOL ? x : { ...x, marketMovePct: spyPct });
+  for (const f of fires) f.market = noted(f.market);
+  // Trading stopped / trading again (information only): the market-state write is the once-only marker.
+  const spyT = mem.get(MARKET_SYMBOL)?.last?.t;
+  const feedAlive = spyT !== undefined && nowMs - spyT < 2 * MIN;
+  const haltEvents: OutboundEvent[] = [];
+  for (const s of liveStocks) {
+    if (!s.halt) continue;
+    const ms = mem.get(s.symbol)!;
+    const st = haltStep(ms, nowMs, session.open, session.close, feedAlive);
+    if (!st) continue;
+    const next: MarketState = { ...ms };
+    if (st.kind === "HALT") {
+      next.haltLastTradeMs = st.lastTradeMs;
+      haltEvents.push({ type: "HALT", symbol: s.symbol, lastTradeMs: st.lastTradeMs, minutes: Math.floor((nowMs - st.lastTradeMs) / MIN), ...(st.lastPrice !== undefined ? { lastPrice: st.lastPrice } : {}) });
+    } else {
+      delete next.haltLastTradeMs;
+      haltEvents.push({ type: "RESUMED", symbol: s.symbol, price: st.price, tMs: st.tMs });
+    }
+    mem.set(s.symbol, next);
+    const i = toWrite.findIndex((x) => x.symbol === s.symbol);
+    if (i >= 0) toWrite[i] = next;
+    else toWrite.push(next);
+  }
+  if (haltEvents.length) await emitMany(store, out, haltEvents, nowMs);
+
   // Batched writes: re-arms / held prices, then new alerts (claim -> write -> enqueue).
   const oks = await putMany(store, changes);
   changes.forEach((c, k) => {
@@ -329,7 +376,7 @@ async function tick(
   const due = [...rs.values()]
     .filter((r) => reminderDue(r, nowMs) && liveStocks.some((x) => x.symbol === r.symbol))
     .sort((a, b) => (a.t0Ms ?? 0) - (b.t0Ms ?? 0));
-  if (due.length) await sendDueReminders(store, out, due, mem, backInside, nowMs, settingsFor);
+  if (due.length) await sendDueReminders(store, out, due, new Map([...mem].map(([k, v]) => [k, noted(v)])), backInside, nowMs, settingsFor);
 
   // --- opening briefing (FR-7)
   await maybeBriefing(store, m, session, date, nowMs, active, mem);
@@ -463,7 +510,8 @@ export async function runPreOpen(ports: Ports, nowMs: number, opts: TickOptions 
     const baselines = await loadBaselines(store, active, m);
 
     // Previous Close, once per day (FR-6.3); a dozen per run
-    const need = active.filter((s) => !ms.get(s.symbol)?.prev).slice(0, Math.min(PREV_CLOSE_PER_RUN, CALL_BUDGET - TAIL - 6 - m.calls));
+    const withSpy = active.some((s) => s.symbol === MARKET_SYMBOL) ? active : [...active, { symbol: MARKET_SYMBOL, enabled: true }];
+    const need = withSpy.filter((s) => !ms.get(s.symbol)?.prev).slice(0, Math.min(PREV_CLOSE_PER_RUN, CALL_BUDGET - TAIL - 6 - m.calls));
     const refs = await Promise.all(need.map((s) => market.previousDaily(s.symbol, date).catch(() => null)));
     const fresh: MarketState[] = [];
     need.forEach((s, i) => {

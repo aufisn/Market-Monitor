@@ -2,7 +2,7 @@
  * Input validation for everything that arrives from outside (dashboard API,
  * Telegram commands, imported files). FR-2.3, FR-2.4, FR-12.1.
  */
-import { DEFAULT_SETTINGS, type RuleKind, type Settings, type StockConfig, type ThresholdInput, type VolumeInput } from "../core/ports";
+import { DEFAULT_SETTINGS, type FastInput, type RuleKind, type Settings, type StockConfig, type ThresholdInput, type VolumeInput } from "../core/ports";
 import { SYMBOL_RE } from "../adapters/callbacks";
 
 export const MAX_STOCKS = 30; // FR-2.2 default; raise only after Phase 0 measures 50
@@ -48,6 +48,16 @@ export function validateThreshold(v: unknown, field: string): ThresholdInput {
     return { mode: "percent", value };
   }
   return bad(field, 'mode must be "dollar" or "percent"');
+}
+
+export function validateFast(v: unknown): FastInput {
+  if (!isObj(v)) return bad("fast", "must be {pct, minutes}");
+  onlyKeys(v, ["pct", "minutes"], "fast");
+  const pct = finite(v.pct, "fast.pct");
+  if (pct < 0.5 || pct > 50) return bad("fast.pct", "must be between 0.5 and 50");
+  const minutes = finite(v.minutes, "fast.minutes");
+  if (minutes !== 5 && minutes !== 10 && minutes !== 15 && minutes !== 30) return bad("fast.minutes", "must be 5, 10, 15 or 30");
+  return { pct, minutes };
 }
 
 export function validateVolume(v: unknown, field: string): VolumeInput {
@@ -105,7 +115,7 @@ export function validateSettings(v: unknown, base: Settings = DEFAULT_SETTINGS):
   return { ...base, ...validateSettingsPartial(v) };
 }
 
-const STOCK_KEYS = ["symbol", "enabled", "high", "low", "volume", "range52", "mutedUntilMs", "paused", "notes", "overrides"] as const;
+const STOCK_KEYS = ["symbol", "enabled", "high", "low", "volume", "range52", "fast", "averages", "halt", "mutedUntilMs", "paused", "notes", "overrides"] as const;
 
 /**
  * Merge a patch onto `existing` (or build new) and validate. `null` clears an
@@ -135,6 +145,16 @@ export function validateStockInput(body: unknown, existing?: StockConfig, opts: 
     else if (body.range52 === true) out.range52 = true;
     else bad("range52", "must be true or false");
   }
+  for (const k of ["averages", "halt"] as const) {
+    if (body[k] === undefined) continue;
+    if (body[k] === null || body[k] === false) delete out[k];
+    else if (body[k] === true) out[k] = true;
+    else bad(k, "must be true or false");
+  }
+  if (body.fast !== undefined) {
+    if (body.fast === null) delete out.fast;
+    else out.fast = validateFast(body.fast);
+  }
   if (body.mutedUntilMs !== undefined) {
     if (body.mutedUntilMs === null) delete out.mutedUntilMs;
     else {
@@ -156,12 +176,12 @@ export function validateStockInput(body: unknown, existing?: StockConfig, opts: 
     if (body.overrides === null) delete out.overrides;
     else out.overrides = validateSettingsPartial(body.overrides, "overrides");
   }
-  // At least one alert (LOW, HIGH, Volume or the 52-week switch). Import may carry older stocks without one (opts.allowNoAlert).
+  // At least one alert (LOW, HIGH, Volume or one of the "More alerts"). The halt notice is information only and does not count. Import may carry older stocks without one (opts.allowNoAlert).
   // A legacy stock that already has none can still change notes/enabled/paused; touching the rules is checked.
-  const has = (c?: StockConfig) => !!(c?.high || c?.low || c?.volume || c?.range52);
-  const touched = ["high", "low", "volume", "range52"].some((k) => body[k] !== undefined);
+  const has = (c?: StockConfig) => !!(c?.high || c?.low || c?.volume || c?.range52 || c?.fast || c?.averages);
+  const touched = ["high", "low", "volume", "range52", "fast", "averages"].some((k) => body[k] !== undefined);
   if (!opts.allowNoAlert && !has(out) && (!existing || has(existing) || touched)) {
-    throw new ApiError(422, "NO_ALERT", "Set at least one alert: LOW, HIGH, Volume or 52-week.");
+    throw new ApiError(422, "NO_ALERT", "Set at least one alert: LOW, HIGH, Volume or one of More alerts.");
   }
   return out;
 }
@@ -206,5 +226,7 @@ export function changedRules(a: StockConfig | undefined, b: StockConfig): RuleKi
   if (JSON.stringify(a?.low) !== JSON.stringify(b.low)) out.push("LOW");
   if (JSON.stringify(a?.volume) !== JSON.stringify(b.volume)) out.push("VOLUME");
   if (!!a?.range52 !== !!b.range52) out.push("HIGH52", "LOW52");
+  if (JSON.stringify(a?.fast) !== JSON.stringify(b.fast)) out.push("FAST");
+  if (!!a?.averages !== !!b.averages) out.push("MA50", "MA200");
   return out;
 }

@@ -16,7 +16,7 @@ import { errorResponse, json, readJson, text } from "./http";
 import { ApiError, MAX_STOCKS, validateSettings, validateSettingsPartial, validateStockInput, validateSymbol } from "./validate";
 
 const LOG_KINDS: readonly LogKind[] = ["FIRST_ALERT", "REMINDER", "ACK", "LATE_ALERT", "SETTINGS_CHANGE", "ERROR", "SUPPRESSED", "HEALTH"];
-const RULES: readonly RuleKind[] = ["HIGH", "LOW", "VOLUME", "HIGH52", "LOW52"];
+const RULES: readonly RuleKind[] = ["HIGH", "LOW", "VOLUME", "HIGH52", "LOW52", "FAST", "MA50", "MA200"];
 
 function allow(method: string, ...ok: string[]): void {
   if (!ok.includes(method)) throw new ApiError(405, "METHOD_NOT_ALLOWED", `Use ${ok.join(" or ")}.`);
@@ -76,7 +76,7 @@ async function route(request: Request, ctx: Ctx, url: URL): Promise<Response> {
     if (b.all === true) return json({ acknowledged: await applyAck(ctx, { all: true }, "ackall") });
     const symbol = validateSymbol(b.symbol);
     const rule = b.rule === undefined ? undefined : RULES.includes(b.rule as RuleKind) ? (b.rule as RuleKind) : undefined;
-    if (b.rule !== undefined && !rule) throw new ApiError(400, "INVALID_INPUT", "rule: must be HIGH, LOW, VOLUME, HIGH52 or LOW52");
+    if (b.rule !== undefined && !rule) throw new ApiError(400, "INVALID_INPUT", "rule: must be one of " + RULES.join(", "));
     const cycle = b.cycle === undefined ? undefined : Number(b.cycle);
     if (cycle !== undefined && !Number.isInteger(cycle)) throw new ApiError(400, "INVALID_INPUT", "cycle: must be a whole number");
     const done = await applyAck(ctx, { symbol, rule, cycle }, "dashboard");
