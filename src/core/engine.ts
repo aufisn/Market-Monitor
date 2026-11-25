@@ -15,7 +15,7 @@ import { EVENT_PRIORITY, priceSide } from "./ports";
 import type { Bar, Baseline, EodSummary, MarketData, MarketState, OutboundEvent, RuleKind, RuleState, Settings, Snapshot, StockConfig, Store, TradingDate, YearRange } from "./ports";
 import { evaluatePrice, evaluateVolume, isFlaggedTrade, priceInsideBuffer, resolveThreshold, volumeInsideBuffer } from "./rules";
 import { MIN, nyDate, nyParts } from "./time";
-import { MARKET_SYMBOL, addMinutePrice, averageSide, evaluateFast, haltStep, marketMove } from "./signals";
+import { MARKET_SYMBOL, addMinutePrice, averageSide, evaluateFast, marketMove } from "./signals";
 import { W52_PER_RUN_PRE_OPEN, W52_PER_RUN_SESSION, buildYearRange, high52Threshold, low52Threshold, needYearRange, yearWindow } from "./yearrange";
 
 export interface Ports {
@@ -191,7 +191,7 @@ async function tick(
     return summary("ok", m);
   }
 
-  // --- poll (retry once, FR-3.9); SPY rides along for the market note and the halt check (same call)
+  // --- poll (retry once, FR-3.9); SPY rides along for the market note (same call)
   const polledStocks: StockConfig[] = byName.has(MARKET_SYMBOL) ? active : [...active, { symbol: MARKET_SYMBOL, enabled: true }];
   const polledSyms = polledStocks.map((s) => s.symbol);
   let snaps: Record<string, Snapshot>;
@@ -341,30 +341,6 @@ async function tick(
   const spyPct = marketMove(mem.get(MARKET_SYMBOL));
   const noted = (x: MarketState): MarketState => (spyPct === undefined || x.symbol === MARKET_SYMBOL ? x : { ...x, marketMovePct: spyPct });
   for (const f of fires) f.market = noted(f.market);
-  // Trading stopped / trading again (information only): the market-state write is the once-only marker.
-  const spyT = mem.get(MARKET_SYMBOL)?.last?.t;
-  const feedAlive = spyT !== undefined && nowMs - spyT < 2 * MIN;
-  const haltEvents: OutboundEvent[] = [];
-  for (const s of liveStocks) {
-    if (!s.halt) continue;
-    const ms = mem.get(s.symbol)!;
-    const st = haltStep(ms, nowMs, session.open, session.close, feedAlive);
-    if (!st) continue;
-    const next: MarketState = { ...ms };
-    if (st.kind === "HALT") {
-      next.haltLastTradeMs = st.lastTradeMs;
-      haltEvents.push({ type: "HALT", symbol: s.symbol, lastTradeMs: st.lastTradeMs, minutes: Math.floor((nowMs - st.lastTradeMs) / MIN), ...(st.lastPrice !== undefined ? { lastPrice: st.lastPrice } : {}) });
-    } else {
-      delete next.haltLastTradeMs;
-      haltEvents.push({ type: "RESUMED", symbol: s.symbol, price: st.price, tMs: st.tMs });
-    }
-    mem.set(s.symbol, next);
-    const i = toWrite.findIndex((x) => x.symbol === s.symbol);
-    if (i >= 0) toWrite[i] = next;
-    else toWrite.push(next);
-  }
-  if (haltEvents.length) await emitMany(store, out, haltEvents, nowMs);
-
   // Batched writes: re-arms / held prices, then new alerts (claim -> write -> enqueue).
   const oks = await putMany(store, changes);
   changes.forEach((c, k) => {

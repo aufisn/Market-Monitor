@@ -829,7 +829,7 @@ function stockSheet(sym) {
     const volU = sel("sfVolU", "Volume unit", [["multiple", "x usual at this time"], ["absolute", "shares"]], ex?.volume?.mode || "multiple");
     const noteIn = h("textarea", { class: "in ta", id: "sfNote", maxlength: "200", rows: "2", value: ex?.notes || "" });
     // "More alerts" (design step 7): folded; one switch and one line each; only Fast move has settings.
-    const more = { range52: !!ex?.range52, fast: !!ex?.fast, averages: !!ex?.averages, halt: !!ex?.halt };
+    const more = { range52: !!ex?.range52, fast: !!ex?.fast, averages: !!ex?.averages };
     const mkSw = (id, key, label) => {
       const b = h("button", { type: "button", class: "sw", id, role: "switch", "aria-checked": more[key] ? "true" : "false", "aria-label": label, "aria-describedby": id + "H",
         onclick: () => { more[key] = !more[key]; b.setAttribute("aria-checked", more[key] ? "true" : "false"); err.textContent = ""; calc(); } },
@@ -837,7 +837,7 @@ function stockSheet(sym) {
       return b;
     };
     const hint = (id) => h("p", { class: "hint", id: id + "H", "aria-live": "polite" });
-    const h52 = hint("sf52"), hFast = hint("sfFast"), hAvg = hint("sfAvg"), hHalt = hint("sfHalt");
+    const h52 = hint("sf52"), hFast = hint("sfFast"), hAvg = hint("sfAvg");
     const fastPct = h("input", { class: "in", id: "sfFastPct", type: "text", inputmode: "decimal", autocomplete: "off", value: String(ex?.fast?.pct ?? 3), "aria-label": "Fast move percent" });
     const fastMin = sel("sfFastMin", "Fast move minutes", L.FAST_MINUTES.map((m) => [String(m), String(m)]), String(ex?.fast?.minutes ?? 15));
     const fastCfg = h("div", { class: "mini" }, fastPct, "% in", fastMin, "min");
@@ -847,8 +847,7 @@ function stockSheet(sym) {
       h("summary", {}, h("span", {}, h("span", { text: "More alerts " }), moreSum), h("span", { class: "chev", "aria-hidden": "true", text: "›" })),
       opt("52-week high / low", h52, mkSw("sf52", "range52", "52-week high and low alerts")),
       opt("Fast move", hFast, mkSw("sfFast", "fast", "Fast move alert"), fastCfg),
-      opt("50 / 200-day average", hAvg, mkSw("sfAvg", "averages", "50 and 200-day average alerts")),
-      opt("Trading stopped", hHalt, mkSw("sfHalt", "halt", "Trading stopped notice")));
+      opt("50 / 200-day average", hAvg, mkSw("sfAvg", "averages", "50 and 200-day average alerts")));
     const pvLow = h("p", { class: "pv", id: "pvLow", "aria-live": "polite" });
     const pvHigh = h("p", { class: "pv", id: "pvHigh", "aria-live": "polite" });
     const pvVol = h("p", { class: "pv", id: "pvVol", "aria-live": "polite" });
@@ -860,7 +859,7 @@ function stockSheet(sym) {
     const no = h("button", { type: "button", class: "btn", text: "No, go back", onclick: () => { confirmBox.hidden = true; form.hidden = false; lowIn.focus(); } });
     const confirmBox = h("div", { class: "confirm", hidden: true, role: "alertdialog", "aria-labelledby": "cfT" }, h("h3", { id: "cfT", text: "This will alert immediately. Save?" }), cfP, h("div", { class: "dact" }, yes, no));
     let pending = null;
-    const read = () => ({ editing: !!v, existing: ex, symbol: symIn.value, on, low: { mode: lowU.value, text: lowIn.value }, high: { mode: highU.value, text: highIn.value }, vol: { mode: volU.value, text: volIn.value }, range52: more.range52, fast: { on: more.fast, pct: fastPct.value, minutes: fastMin.value }, averages: more.averages, halt: more.halt, notes: noteIn.value, prev: v?.prev, last: v?.last, cum: v?.cumVolume });
+    const read = () => ({ editing: !!v, existing: ex, symbol: symIn.value, on, low: { mode: lowU.value, text: lowIn.value }, high: { mode: highU.value, text: highIn.value }, vol: { mode: volU.value, text: volIn.value }, range52: more.range52, fast: { on: more.fast, pct: fastPct.value, minutes: fastMin.value }, averages: more.averages, notes: noteIn.value, prev: v?.prev, last: v?.last, cum: v?.cumVolume });
     function calc() {
       const r = L.checkStockForm(read());
       const line = (el, res, none, ok) => { el.textContent = res.state === "ok" ? ok : res.state === "error" ? res.err : none; el.classList.toggle("bad", res.state === "error"); };
@@ -875,8 +874,7 @@ function stockSheet(sym) {
       hAvg.textContent = Number.isFinite(w?.ma50) || Number.isFinite(w?.ma200)
         ? "Crosses " + [Number.isFinite(w?.ma50) ? "$" + L.money(w.ma50) + " (50-day)" : "", Number.isFinite(w?.ma200) ? "$" + L.money(w.ma200) + " (200-day)" : ""].filter(Boolean).join(" or ")
         : "Levels load from the official daily prices";
-      hHalt.textContent = "No trades for 5 minutes in market hours (possible halt). Information only.";
-      const on = L.moreOn({ range52: more.range52, fast: more.fast ? { pct: fastPct.value, minutes: fastMin.value } : null, averages: more.averages, halt: more.halt });
+      const on = L.moreOn({ range52: more.range52, fast: more.fast ? { pct: fastPct.value, minutes: fastMin.value } : null, averages: more.averages });
       moreSum.textContent = on.length ? "· " + on.map((t) => t.split(" ")[0]).join(" · ") : "· none on";
       pvNote.textContent = r.vol.state === "ok" && r.vol.mode === "multiple" && L.usualVolumeWaits(!!v, v?.baseline) ? L.USUAL_VOLUME_NOTE : "";
       return r;

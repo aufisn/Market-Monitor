@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { runTick } from "../../src/core/engine";
 import type { Ports } from "../../src/core/engine";
 import { MIN } from "../../src/core/time";
-import { addMinutePrice, averageSide, evaluateFast, haltStep, marketMove } from "../../src/core/signals";
+import { addMinutePrice, averageSide, evaluateFast, marketMove } from "../../src/core/signals";
 import { buildYearRange } from "../../src/core/yearrange";
 import { DAY1, et, rig, snap } from "./memory";
 import type { Rig } from "./memory";
@@ -60,35 +60,6 @@ describe("50 / 200-day averages", () => {
     set(r, "AAA", 94.9, at("10:01")); await tick(r, at("10:01"));
     set(r, "AAA", 105.2, at("10:02")); await tick(r, at("10:02"));
     expect(r.store.events("FIRST_ALERT").map((e) => e.rule.rule)).toEqual(["MA200", "MA50"]);
-  });
-});
-
-describe("trading stopped", () => {
-  const liquid = { cum: 200_000 };
-  it("haltStep: needs a live feed, a liquid stock and 5 quiet minutes; resumes on a newer trade", () => {
-    const ms = { symbol: "AAA", date: D, last: { t: at("10:00"), p: 100, s: 1 }, cumVolume: 200_000 };
-    const open = at("09:30"), close = at("16:00");
-    expect(haltStep(ms, at("10:04:59"), open, close, true)).toBeNull();
-    expect(haltStep(ms, at("10:05"), open, close, false)).toBeNull();
-    expect(haltStep({ ...ms, cumVolume: 1000 }, at("10:05"), open, close, true)).toBeNull();
-    expect(haltStep(ms, at("10:05"), open, close, true)).toEqual({ kind: "HALT", lastTradeMs: at("10:00"), lastPrice: 100 });
-    expect(haltStep({ ...ms, haltLastTradeMs: at("10:00") }, at("10:09"), open, close, true)).toBeNull();
-    expect(haltStep({ ...ms, haltLastTradeMs: at("09:58") }, at("10:09"), open, close, true)).toEqual({ kind: "RESUMED", price: 100, tMs: at("10:00") });
-  });
-  it("engine: one HALT notice, then RESUMED when it trades again; SPY rides along in the same call", async () => {
-    const r = rig([{ symbol: "AAA", enabled: true, halt: true, high: { mode: "dollar", value: 500 } }]);
-    set(r, "AAA", 100, at("10:00"), liquid); set(r, "SPY", 600, at("10:00")); await tick(r, at("10:00"));
-    for (const t of ["10:06", "10:07"]) { set(r, "SPY", 600, at(t)); await tick(r, at(t)); } // AAA snapshot still shows the 10:00 trade
-    expect(r.store.events("HALT")).toEqual([{ type: "HALT", symbol: "AAA", lastTradeMs: at("10:00"), lastPrice: 100, minutes: 6 }]);
-    set(r, "AAA", 99, at("10:08"), liquid); set(r, "SPY", 600, at("10:08")); await tick(r, at("10:08"));
-    expect(r.store.events("RESUMED")).toEqual([{ type: "RESUMED", symbol: "AAA", price: 99, tMs: at("10:08") }]);
-    expect(r.market.calls.snapshots).toBe(4);
-  });
-  it("no notice when the whole feed is silent (data problem, not a halt)", async () => {
-    const r = rig([{ symbol: "AAA", enabled: true, halt: true, high: { mode: "dollar", value: 500 } }]);
-    set(r, "AAA", 100, at("10:00"), liquid); set(r, "SPY", 600, at("10:00")); await tick(r, at("10:00"));
-    await tick(r, at("10:07"));
-    expect(r.store.events("HALT")).toHaveLength(0);
   });
 });
 

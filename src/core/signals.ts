@@ -1,6 +1,6 @@
 /**
- * Design step 7 signals (ux/more-alerts-mockup.html): fast move, 50/200-day average crossings,
- * "trading stopped" (possible halt) and the market (SPY) note. Pure: no I/O.
+ * Design step 7 signals (ux/more-alerts-mockup.html): fast move, 50/200-day average crossings
+ * and the market (SPY) note. Pure: no I/O.
  */
 import type { MarketState, YearRange } from "./ports";
 import { MIN } from "./time";
@@ -63,32 +63,6 @@ export function averageSide(w: YearRange | undefined, which: "MA50" | "MA200"): 
   const level = which === "MA50" ? w?.ma50 : w?.ma200;
   if (level === undefined || w?.lastClose === undefined) return undefined;
   return { side: w.lastClose >= level ? "LOW" : "HIGH", level };
-}
-
-// ------------------------------------------------------------ trading stopped (possible halt)
-export const HALT_MINUTES = 5;
-/** Only stocks that normally trade every minute on IEX: at least this many IEX shares per minute so far today. */
-export const HALT_MIN_SHARES_PER_MIN = 1000;
-/** No notice in the first minutes of the session or the last minute before the close. */
-const HALT_QUIET_AFTER_OPEN = 15 * MIN;
-
-export type HaltStep = { kind: "HALT"; lastTradeMs: number; lastPrice?: number } | { kind: "RESUMED"; price: number; tMs: number } | null;
-
-/**
- * feedAlive: another symbol (SPY) traded in the last 2 minutes, so a silent stock is not a data outage.
- * Returns what to send now; the caller records `haltLastTradeMs` on HALT and clears it on RESUMED.
- */
-export function haltStep(ms: MarketState, nowMs: number, openMs: number, closeMs: number, feedAlive: boolean): HaltStep {
-  const t = ms.last?.t;
-  if (ms.haltLastTradeMs !== undefined) {
-    return t !== undefined && t > ms.haltLastTradeMs && ms.last ? { kind: "RESUMED", price: ms.last.p, tMs: t } : null;
-  }
-  if (t === undefined || t < openMs || !feedAlive) return null;
-  if (nowMs - openMs < HALT_QUIET_AFTER_OPEN || nowMs > closeMs - MIN) return null;
-  if (nowMs - t < HALT_MINUTES * MIN) return null;
-  const minutes = (t - openMs) / MIN;
-  if (!(minutes > 0) || (ms.cumVolume ?? 0) / minutes < HALT_MIN_SHARES_PER_MIN) return null;
-  return { kind: "HALT", lastTradeMs: t, lastPrice: ms.last?.p };
 }
 
 // ------------------------------------------------------------ market note

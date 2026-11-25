@@ -181,7 +181,7 @@ export const ruleLabel = (r) => ({ HIGH52: "52W HIGH", LOW52: "52W LOW", FAST: "
 
 const arrowPct = (p) => (p >= 0 ? "▲" : "▼") + Math.abs(p).toFixed(1) + "%";
 /** The one coloured line at the top of a card (design step 7), or null when nothing needs attention.
-    Red = an alert to acknowledge (newest first), amber = trading stopped. */
+    Red = an alert to acknowledge (newest first); amber is kept for later warnings (split). */
 export function attentionLine(vm, nowMs) {
   const act = (vm.active || []).slice().sort((a, b) => (b.t0Ms || 0) - (a.t0Ms || 0));
   if (act.length) {
@@ -196,7 +196,6 @@ export function attentionLine(vm, nowMs) {
     const more = act.length > 1 ? "and " + (act.length - 1) + " more alert" + (act.length > 2 ? "s" : "") : "";
     return { tone: "red", title: title.trim(), sub: more };
   }
-  if (Number.isFinite(vm.haltSince)) return { tone: "amber", title: "No trades since " + hm(vm.haltSince, TZ_ET) + " ET", sub: "Possible trading halt" };
   return null;
 }
 
@@ -206,7 +205,6 @@ export function moreOn(s) {
   if (s.range52) on.push("52W");
   if (s.fast) on.push("Fast " + s.fast.pct + "%/" + s.fast.minutes + "m");
   if (s.averages) on.push("Avg");
-  if (s.halt) on.push("Halt");
   return on;
 }
 export const FAST_MINUTES = [5, 10, 15, 30];
@@ -272,7 +270,7 @@ export function buildVM(stock, market, rules, settings, nowMs, marketOpen, flags
     sym: stock.symbol, stock, status, near, muted, paused, pausedAll: !!flags.pausedAll, notes: stock.notes || "",
     last, lastT, ageS, fresh: fr, prev, open: market?.open, dayHigh: market?.dayHigh, dayLow: market?.dayLow, cumVolume: market?.cumVolume,
     high: hi, low: lo, hiP, loP, vol: stock.volume, range52: !!stock.range52, w52: market?.w52,
-    fast: stock.fast, averages: !!stock.averages, halt: !!stock.halt, haltSince: market?.haltLastTradeMs, volAvgMultiple: market?.baseline?.multiple, baseline: market?.baseline,
+    fast: stock.fast, averages: !!stock.averages, volAvgMultiple: market?.baseline?.multiple, baseline: market?.baseline,
     changeAbs: Number.isFinite(last) && Number.isFinite(prev) ? last - prev : NaN,
     changePct: Number.isFinite(last) && Number.isFinite(prev) && prev !== 0 ? ((last - prev) / prev) * 100 : NaN,
     nearest, active, acked, atClose,
@@ -469,7 +467,6 @@ export function checkStockForm(f) {
     if (f.range52) body.range52 = true;
     if (fastOn) body.fast = { pct: fastPct, minutes: fastMin };
     if (f.averages) body.averages = true;
-    if (f.halt) body.halt = true;
     if (notes) body.notes = notes;
     if (!f.on) body.paused = true;
     out.body = body; out.changed = true;
@@ -485,7 +482,6 @@ export function checkStockForm(f) {
   const nf = fastOn ? { pct: fastPct, minutes: fastMin } : null;
   if (JSON.stringify(nf) !== JSON.stringify(ex.fast || null)) body.fast = nf;
   if (!!f.averages !== !!ex.averages) body.averages = !!f.averages;
-  if (!!f.halt !== !!ex.halt) body.halt = !!f.halt;
   if (notes !== (ex.notes || "")) body.notes = notes || null;
   if (f.on === !!ex.paused) body.paused = !f.on;
   out.body = body; out.changed = Object.keys(body).length > 0;

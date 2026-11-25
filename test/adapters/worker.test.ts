@@ -124,10 +124,10 @@ describe("dashboard API behaviour", () => {
     expect(JSON.stringify(await (await post({ symbol: "MSFT" })).json())).toContain("Set at least one alert: LOW, HIGH, Volume or one of More alerts.");
     expect((await post({ symbol: "AAPL", range52: true })).status).toBe(201); // the 52-week switch alone is an alert
     expect((await post({ symbol: "AMD", range52: "yes" })).status).toBe(400);
-    expect((await post({ symbol: "AMD", halt: true })).status).toBe(422); // the halt notice alone is information, not an alert
+    expect((await post({ symbol: "AMD", halt: true })).status).toBe(400); // "Trading stopped" was dropped from this version
     expect((await post({ symbol: "AMD", fast: { pct: 3, minutes: 7 } })).status).toBe(400);
     expect((await post({ symbol: "AMD", fast: { pct: 0.1, minutes: 15 } })).status).toBe(400);
-    expect((await post({ symbol: "AMD", fast: { pct: 3, minutes: 15 }, halt: true })).status).toBe(201);
+    expect((await post({ symbol: "AMD", fast: { pct: 3, minutes: 15 } })).status).toBe(201);
     expect((await post({ symbol: "INTC", averages: true })).status).toBe(201);
     expect((await post({ symbol: "MSFT", volume: { mode: "multiple", value: 2 } })).status).toBe(201);
     const put = (b: unknown) => api("/api/stocks/MSFT", { method: "PUT", body: JSON.stringify(b) });

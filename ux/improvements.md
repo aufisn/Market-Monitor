@@ -59,3 +59,5 @@ Mock-up: `ux/more-alerts-mockup.html`. Not built yet.
 - Telegram: at most four lines. "Market: SPY x%" line added to an alert only when SPY moved more than 1% that day. Fast move and averages behave like LOW/HIGH (reminders, acknowledge); halt and news are information only. News is silent, at most one message per stock per 15 minutes.
 - Market-wide moves: no new alert; add SPY/QQQ as a stock with % levels.
 - To verify before building: Alpaca free-plan access to corporate actions (splits) and news; call budget per run.
+
+- Update 2026-11-25: "Trading stopped" is dropped from this version (too noisy for now); kept as an idea for a future update.

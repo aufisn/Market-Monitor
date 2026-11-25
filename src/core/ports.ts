@@ -96,8 +96,6 @@ export interface StockConfig {
   fast?: FastInput;
   /** One switch for the 50- and 200-day average crossings (MA50, MA200). */
   averages?: boolean;
-  /** "Trading stopped" notice: no trades for a while in market hours (information only, no rule state). */
-  halt?: boolean;
   mutedUntilMs?: number;
   paused?: boolean;
   notes?: string;
@@ -174,8 +172,6 @@ export interface MarketState {
   w52?: YearRange;
   /** [minute start ms, last price in that minute], newest last, about 31 minutes (fast move). */
   minutePrices?: [number, number][];
-  /** Set while a "trading stopped" notice is open: the time of the last trade before the stop. */
-  haltLastTradeMs?: number;
   /** Only on the copy carried by an alert event: the market's (SPY) move today in %, when it is at least 1%. */
   marketMovePct?: number;
 }
@@ -282,9 +278,7 @@ export type OutboundEvent =
   | { type: "READY"; date: TradingDate; info: Record<string, unknown> }
   | { type: "SESSION_ENDED"; date: TradingDate; counts: Record<string, number>; eod?: EodSummary }
   | { type: "OPS_NOTICE"; code: string; detail: string }
-  /** Information only: no trades for a while in market hours (possible halt), and trading again. */
-  | { type: "HALT"; symbol: Symbol; lastPrice?: number; lastTradeMs: number; minutes: number }
-  | { type: "RESUMED"; symbol: Symbol; price: number; tMs: number }
+
   | { type: "TEST_ALERT" };
 
 /** Priority for the send queue (FR-5.4): lower sends first. */
@@ -299,8 +293,6 @@ export const EVENT_PRIORITY: Record<OutboundEvent["type"], number> = {
   READY: 3,
   SESSION_ENDED: 3,
   OPS_NOTICE: 3,
-  HALT: 0,
-  RESUMED: 2,
 };
 
 export interface Notifier {

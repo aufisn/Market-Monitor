@@ -115,7 +115,7 @@ export function validateSettings(v: unknown, base: Settings = DEFAULT_SETTINGS):
   return { ...base, ...validateSettingsPartial(v) };
 }
 
-const STOCK_KEYS = ["symbol", "enabled", "high", "low", "volume", "range52", "fast", "averages", "halt", "mutedUntilMs", "paused", "notes", "overrides"] as const;
+const STOCK_KEYS = ["symbol", "enabled", "high", "low", "volume", "range52", "fast", "averages", "mutedUntilMs", "paused", "notes", "overrides"] as const;
 
 /**
  * Merge a patch onto `existing` (or build new) and validate. `null` clears an
@@ -145,11 +145,10 @@ export function validateStockInput(body: unknown, existing?: StockConfig, opts: 
     else if (body.range52 === true) out.range52 = true;
     else bad("range52", "must be true or false");
   }
-  for (const k of ["averages", "halt"] as const) {
-    if (body[k] === undefined) continue;
-    if (body[k] === null || body[k] === false) delete out[k];
-    else if (body[k] === true) out[k] = true;
-    else bad(k, "must be true or false");
+  if (body.averages !== undefined) {
+    if (body.averages === null || body.averages === false) delete out.averages;
+    else if (body.averages === true) out.averages = true;
+    else bad("averages", "must be true or false");
   }
   if (body.fast !== undefined) {
     if (body.fast === null) delete out.fast;
@@ -176,7 +175,7 @@ export function validateStockInput(body: unknown, existing?: StockConfig, opts: 
     if (body.overrides === null) delete out.overrides;
     else out.overrides = validateSettingsPartial(body.overrides, "overrides");
   }
-  // At least one alert (LOW, HIGH, Volume or one of the "More alerts"). The halt notice is information only and does not count. Import may carry older stocks without one (opts.allowNoAlert).
+  // At least one alert (LOW, HIGH, Volume or one of the "More alerts"). Import may carry older stocks without one (opts.allowNoAlert).
   // A legacy stock that already has none can still change notes/enabled/paused; touching the rules is checked.
   const has = (c?: StockConfig) => !!(c?.high || c?.low || c?.volume || c?.range52 || c?.fast || c?.averages);
   const touched = ["high", "low", "volume", "range52", "fast", "averages"].some((k) => body[k] !== undefined);

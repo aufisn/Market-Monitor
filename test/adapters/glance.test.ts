@@ -34,7 +34,7 @@ const lines = (r: { text: string }) => r.text.split("\n");
 const rowsOf = (b: { text: string }[][] | undefined) => (b ?? []).map((row) => row.map((x) => x.text));
 
 // ------------------------------------------------------------ more alerts (design step 7)
-describe("more alerts: fast move, averages, trading stopped, market note", () => {
+describe("more alerts: fast move, averages, market note", () => {
   const tsla = (o: Partial<MarketState> = {}) => mk("TSLA", { last: { t: 1, p: 236.4, s: 1 }, prev: prev(245.95, 250, 240, 1e6), ...o });
   it("FAST: move and window in the head, price and day change, market line only when attached", () => {
     const ev: OutboundEvent = { type: "FIRST_ALERT", threshold: 244.7, rule: rs("TSLA", "FAST", { t0Ms: et(D, "10:42"), t0Value: 236.4, thresholdAtT0: 244.7 }), market: tsla({ marketMovePct: -1.6 }) };
@@ -49,16 +49,6 @@ describe("more alerts: fast move, averages, trading stopped, market note", () =>
     expect(lines(r)[0]).toBe("🚨 NEW 〰️ <b>TSLA 200D</b> 236.05");
     expect(r.text).toContain("Crossed below the 200-day avg 236.10");
     expect(widest(r.text)).toBeLessThanOrEqual(38);
-  });
-  it("HALT notifies with no acknowledge; RESUMED is silent", () => {
-    const h = renderGlance({ type: "HALT", symbol: "TSLA", lastPrice: 236.4, lastTradeMs: et(D, "10:47"), minutes: 5 }, ctxAt("10:52"));
-    expect(lines(h)).toEqual(["⛔ <b>TSLA</b> no trades for 5 min", "Last 236.40 at 10:47 ET", "Possible halt. A message follows", "when it trades again.", "10:52 ET / 19:52 Muscat"]);
-    expect(h.silent).toBeUndefined();
-    expect(JSON.stringify(h.buttons)).not.toContain("Acknowledge");
-    const g = renderGlance({ type: "RESUMED", symbol: "TSLA", price: 236.8, tMs: et(D, "10:58") }, ctxAt("10:58"));
-    expect(g.text).toBe("▶️ <b>TSLA</b> trading again 236.80\n10:58 ET / 19:58 Muscat");
-    expect(g.silent).toBe(true);
-    expect(widest(h.text)).toBeLessThanOrEqual(38);
   });
   it("reminders show a FAST move as a percent, not as a price", () => {
     const r = renderGlance({ type: "REMINDER", backInside: false, market: tsla(), rules: [rs("TSLA", "FAST", { t0Ms: et(D, "10:42"), t0Value: 236.4, thresholdAtT0: 244.7, remindersSent: 1, state: "REPEATING" })] }, ctxAt("10:52"));

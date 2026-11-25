@@ -150,24 +150,6 @@ function avgLine(r: RuleState): string {
 /** `Market: SPY ▼1.6%`, only when the engine attached a market move (at least 1%). */
 const marketLine = (m: MarketState | undefined): string[] => (m?.marketMovePct !== undefined ? [`Market: SPY ${arrowPct(m.marketMovePct)}`] : []);
 
-// ------------------------------------------------------------ trading stopped / trading again (information only)
-function halt(ev: Extract<OutboundEvent, { type: "HALT" }>, ctx: GlanceCtx): Rendered {
-  return {
-    text: body([
-      `⛔ <b>${e(ev.symbol)}</b> no trades for ${ev.minutes} min`,
-      `Last ${num(ev.lastPrice)} at ${etOnly(ev.lastTradeMs)}`,
-      "Possible halt. A message follows",
-      "when it trades again.",
-      both(ctx.nowMs),
-    ]),
-    buttons: ctx.dashboardUrl ? [dash(ctx)] : undefined,
-  };
-}
-const resumed = (ev: Extract<OutboundEvent, { type: "RESUMED" }>): Rendered => ({
-  text: body([`▶️ <b>${e(ev.symbol)}</b> trading again ${num(ev.price)}`, both(ev.tMs)]),
-  silent: true,
-});
-
 /** `Old 52W high 488.54 (12 Mar)`: the level that was passed. */
 function w52Line(rule: RuleKind, m: MarketState): string {
   const w = m.w52;
@@ -540,8 +522,6 @@ export function renderGlanceAll(ev: OutboundEvent, ctx: GlanceCtx): Rendered[] {
     case "SESSION_ENDED": return sessionEnded(ev);
     case "OPS_NOTICE": return [opsNotice(ev, ctx)];
     case "TEST_ALERT": return [testAlert(ctx)];
-    case "HALT": return [halt(ev, ctx)];
-    case "RESUMED": return [resumed(ev)];
   }
 }
 
