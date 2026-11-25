@@ -50,3 +50,12 @@ Applies to every form (add, edit, mute, remove, ...).
 - Card: a 52-week range bar with the last price on it, the two levels and whether the alerts are on, shown even with the switch off.
 - End-of-day summary: a line `52W low – high` per stock (including today), marked "new 52W high/low" when today set one.
 - Less than a year of history: the range uses what there is, and the card says "(under a year)".
+
+## 7. More alerts: split warning, fast move, halt, news, moving averages, market note (design accepted 2026-11-25)
+Mock-up: `ux/more-alerts-mockup.html`. Not built yet.
+- Form: one folded "More alerts" section (52-week, Fast move, 50/200-day average, Trading stopped, News). The folded line lists what is on. One switch and one sentence each; only Fast move has settings (% within 5/10/15/30 min), shown while on.
+- Split warning: always on, no switch. Amber line on the card and one Telegram message when announced; Review shows old -> new levels; one tap schedules the change for the split day, never automatic. Reverse splits too; % levels need no change.
+- Card: no new rows. One coloured line at the top only while something needs attention (red alert, amber warning). 50d/200d are marks on the 52-week bar. One row of small labels shows which extra alerts are on. The LOW-HIGH gauge is dropped from the phone card.
+- Telegram: at most four lines. "Market: SPY x%" line added to an alert only when SPY moved more than 1% that day. Fast move and averages behave like LOW/HIGH (reminders, acknowledge); halt and news are information only. News is silent, at most one message per stock per 15 minutes.
+- Market-wide moves: no new alert; add SPY/QQQ as a stock with % levels.
+- To verify before building: Alpaca free-plan access to corporate actions (splits) and news; call budget per run.

@@ -11,6 +11,7 @@ import { nyDate, realSleep } from "../adapters/util";
 import { buildCtx, missingSecrets, type Ctx, type Deps, type Env } from "./env";
 import { drainOutbound } from "./outbox";
 import { driveTestCycle } from "./testcycle";
+import { maybeAccessCheck } from "./accesscheck";
 import { renderGlance } from "../adapters/render-glance";
 
 export const WORK_START_UTC_HOUR = 11; // 07:00 ET (EDT) / 06:00 ET (EST), the earliest pre-open work
@@ -32,6 +33,8 @@ export interface ScheduledDeps extends Deps {
   engine?: EngineApi;
   pollIntervalMs?: number;
   maxPolls?: number;
+  /** Run the one-time data-access check (default: on in production, off when fetch is injected). */
+  accessCheck?: boolean;
   /** Do not START a poll later than this many ms after the run began. */
   startCutoffMs?: number;
 }
@@ -70,6 +73,12 @@ export async function runScheduledJob(env: Env, deps: ScheduledDeps = {}): Promi
     await driveTestCycle(ctx, t0); // FR-13.1: before the engine, so tests also run when the market is closed
   } catch {
     /* a test must never block alerting */
+  }
+  try {
+    // One-time free-plan check for news and split data (design step 7). Tests inject fetch and opt in explicitly.
+    if (deps.accessCheck ?? !deps.fetch) await maybeAccessCheck(ctx);
+  } catch {
+    /* optional: never blocks alerting */
   }
 
   let polls = 0;

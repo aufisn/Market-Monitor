@@ -211,3 +211,45 @@ describe("command parsing", () => {
     expect(parseCommand("hello")).toBeNull();
   });
 });
+
+describe("one-time data access check (news, splits)", () => {
+  const idle = { runScheduled: async () => ({ status: "idle" }) };
+  const withRoutes = (r: Record<string, (u: string) => Response>) => {
+    const base = f;
+    f = fakeFetch({ ...r, "api.telegram.org": (_u, init) => { tgSent.push(JSON.parse(String(init?.body))); return jsonRes({ ok: true, result: { message_id: 7 } }); } });
+    return base;
+  };
+  beforeEach(async () => (await import("../../src/worker/accesscheck")).resetAccessCheckForTests());
+
+  it("reports allowed and refused data once, silently, with statuses only", async () => {
+    withRoutes({
+      "/v1beta1/news": () => jsonRes({ news: [{ created_at: new Date(NOW - 12 * 60_000).toISOString(), headline: "H" }] }),
+      "symbols=NVDA": () => jsonRes({ corporate_actions: { forward_splits: [{ symbol: "NVDA", old_rate: 1, new_rate: 10, ex_date: "2024-06-10" }] } }),
+      "/v1/corporate-actions": () => jsonRes({ message: "forbidden" }, 403),
+    });
+    await runScheduledJob(env(), { ...deps(), engine: idle, accessCheck: true });
+    expect(tgSent).toHaveLength(1);
+    const msg = tgSent[0] as { text: string; disable_notification?: boolean };
+    expect(msg.text).toContain("News: allowed");
+    expect(msg.text).toContain("latest 12 min old");
+    expect(msg.text).toContain("NVDA 10-for-1 found");
+    expect(msg.text).toContain("Splits (coming): refused (HTTP 403)");
+    expect(msg.text).toContain("Refused data will not be used.");
+    expect(msg.text).not.toContain("H\n");
+    expect(msg.disable_notification).toBe(true);
+    const before = f.calls.length;
+    await runScheduledJob(env(), { ...deps(), engine: idle, accessCheck: true });
+    expect(tgSent).toHaveLength(1);
+    expect(f.calls.slice(before).some((c) => c.url.includes("/v1beta1/news") || c.url.includes("corporate-actions"))).toBe(false);
+  });
+
+  it("no answer (network trouble) records nothing and tries again later", async () => {
+    withRoutes({ "/v1beta1/news": () => { throw new TypeError("network"); }, "/v1/corporate-actions": () => jsonRes({ corporate_actions: {} }) });
+    await runScheduledJob(env(), { ...deps(), engine: idle, accessCheck: true });
+    expect(tgSent).toHaveLength(0);
+    withRoutes({ "/v1beta1/news": () => jsonRes({ news: [] }), "/v1/corporate-actions": () => jsonRes({ corporate_actions: { forward_splits: [], reverse_splits: [] } }) });
+    await runScheduledJob(env(), { ...deps(), engine: idle, accessCheck: true });
+    expect((tgSent[0] as { text: string }).text).toContain("News: allowed");
+    expect((tgSent[0] as { text: string }).text).toContain("Splits (past): answered, no usable data");
+  });
+});

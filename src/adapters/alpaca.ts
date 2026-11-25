@@ -197,6 +197,11 @@ export class AlpacaMarketData implements MarketData {
   }
 
   // ---------------------------------------------------------------- HTTP
+  /** Read-only GET on the market-data host for the one-time access check (news, corporate actions). Same headers, retries and errors. */
+  async rawGet(path: "/v1beta1/news" | "/v1/corporate-actions", params: Record<string, string>): Promise<unknown> {
+    return this.get<unknown>(path, params);
+  }
+
   private async get<T>(path: string, params: Record<string, string>): Promise<T> {
     const url = `${this.base}${path}?${new URLSearchParams(params).toString()}`;
     let lastErr: AlpacaError | undefined;
