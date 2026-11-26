@@ -46,6 +46,11 @@ describe("split maths", () => {
     expect(r.from).toEqual({ high: 160 });
     expect(r.to).toEqual({ high: 40 });
   });
+  it("bad provider ratios convert nothing", () => {
+    const s: StockConfig = { symbol: "AAA", enabled: true, high: { mode: "dollar", value: 160 }, volume: { mode: "absolute", value: 5e11 } };
+    for (const bad of [{ ...FWD, newRate: 1e12 }, { ...FWD, oldRate: 1e9 }, { ...FWD, newRate: Number.NaN }]) expect(applySplit(s, bad).to).toEqual({ high: 160, volume: 5e11 });
+    expect(applySplit(s, { ...FWD, newRate: 10 }).to).toEqual({ high: 160, volume: 5e11 }); // volume would pass 1e12
+  });
   it("upcomingSplit picks the nearest split on or after today", () => {
     expect(upcomingSplit([{ ...FWD, exDate: "2026-11-01" }, FWD, { ...FWD, exDate: "2027-01-04" }], D)).toEqual(FWD);
     expect(upcomingSplit([{ ...FWD, exDate: "2026-11-01" }], D)).toBeUndefined();
@@ -110,6 +115,17 @@ describe("split warning before the open", () => {
     expect(r.store.count("SPLIT_APPLIED")).toBe(1);
     expect((await r.store.listStocks())[0]!.high).toEqual({ mode: "dollar", value: 27.5 });
   });
+  it("a plan already converted by an Adjust now tap is not converted again", async () => {
+    const r = rigX([{ symbol: "AAA", enabled: true, high: { mode: "dollar", value: 27.5 }, splitPlan: TODAY }]);
+    r.market.splitList = { AAA: [TODAY] };
+    await r.store.bumpCounters("meta", { [`splitdone:AAA:${D}`]: 1 });
+    await runPreOpen(r.ports, t("07:10"));
+    const s = (await r.store.listStocks())[0]!;
+    expect(s.high).toEqual({ mode: "dollar", value: 27.5 });
+    expect(s.splitPlan).toBeUndefined();
+    expect(r.store.count("SPLIT_APPLIED")).toBe(0);
+    expect(r.store.count("SPLIT")).toBe(0);
+  });
   it("a plan whose split is no longer listed is dropped without any change", async () => {
     const r = rigX([{ symbol: "AAA", enabled: true, high: { mode: "dollar", value: 110 }, splitPlan: TODAY }]);
     r.market.splitList = {};
@@ -173,6 +189,19 @@ describe("news headlines", () => {
     for (const s of ["AAA", "BBB", "CCC"]) r.market.snaps[s] = snap(s, 100, t0 + 15 * MIN);
     await runTick(r.ports, t0 + 15 * MIN);
     expect(r.store.events("NEWS")[1]!.items.map((x) => x.id)).toEqual([3]);
+  });
+  it("at most five news messages per run; the rest go on the next run", async () => {
+    const syms = ["A1", "A2", "A3", "A4", "A5", "A6", "A7", "A8"];
+    const r = rigX(syms.map((symbol) => ({ symbol, enabled: true, high: { mode: "dollar", value: 110 }, news: true })));
+    const t0 = et(D, "10:00");
+    for (const s of syms) r.market.snaps[s] = snap(s, 100, t0);
+    r.market.headlines = [{ id: 1, tMs: t0 - MIN, headline: "Sector news", source: "x", symbols: syms }];
+    await runTick(r.ports, t0);
+    expect(r.store.count("NEWS")).toBe(5);
+    for (const s of syms) r.market.snaps[s] = snap(s, 100, t0 + MIN);
+    await runTick(r.ports, t0 + MIN);
+    expect(r.store.count("NEWS")).toBe(8);
+    expect(new Set(r.store.events("NEWS").map((e) => e.symbol)).size).toBe(8);
   });
   it("a failing news request never stops alerts", async () => {
     const r = rigX([{ symbol: "AAA", enabled: true, high: { mode: "dollar", value: 110 }, news: true }]);

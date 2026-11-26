@@ -43,7 +43,9 @@ async function route(request: Request, ctx: Ctx, url: URL): Promise<Response> {
     const date = nyDate(now);
     const [snap, baselines] = await Promise.all([ctx.store.dashboardSnapshot(date), ctx.store.getBaselines()]);
     const market = snap.market.map((m) => ({ ...m, baseline: baselineInfo(m, snap.stocks.find((s) => s.symbol === m.symbol), baselines.find((b) => b.symbol === m.symbol), date, now) }));
-    return json({ version: APP_VERSION, serverTimeMs: now, date, maxStocks: MAX_STOCKS, ...snap, market, marketStatus: marketStatus(now, date), pausedAll: snap.stocks.some((s) => s.enabled) && snap.stocks.filter((s) => s.enabled).every((s) => s.paused) });
+    const meta = snap.market.some((x) => x.splits?.length) ? await ctx.store.getCounters("meta") : {};
+    const splitDone = Object.keys(meta).filter((k) => k.startsWith("splitdone:") && meta[k]! > 0).map((k) => k.slice(10));
+    return json({ version: APP_VERSION, serverTimeMs: now, date, maxStocks: MAX_STOCKS, ...snap, market, splitDone, marketStatus: marketStatus(now, date), pausedAll: snap.stocks.some((s) => s.enabled) && snap.stocks.filter((s) => s.enabled).every((s) => s.paused) });
   }
 
   if (path === "/api/stocks") {

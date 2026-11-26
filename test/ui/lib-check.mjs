@@ -82,6 +82,7 @@ assert.deepEqual(L.attentionLine({ active: [], split: SP, stock: st }), { tone: 
 assert.equal(L.attentionLine({ active: [], split: SP, stock: { ...st, splitPlan: SP } }).sub, "Your levels adjust before the open that day");
 assert.equal(L.attentionLine({ active: [], split: SP, stock: { symbol: "X", high: { mode: "percent", value: 5 } } }).review, false);
 assert.equal(L.attentionLine({ active: [{ rule: "HIGH", t0Ms: 1, thresholdAtT0: 110 }], split: SP, stock: st }).tone, "red"); // an alert comes first
+assert.equal(L.attentionLine({ active: [], split: SP, splitDone: true, stock: st }), null); // already applied
 assert.match(L.splitSentence(SP), /each share becomes 4, so prices divide by 4/);
 assert.match(L.splitSentence({ ...SP, oldRate: 10, newRate: 1 }), /every 10 shares become 1, so prices multiply by 10/);
 console.log("lib-check ok");

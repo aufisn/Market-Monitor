@@ -16,8 +16,8 @@ import type { Bar, Baseline, EodSummary, MarketData, MarketState, NewsHeadline, 
 import { evaluatePrice, evaluateVolume, isFlaggedTrade, priceInsideBuffer, resolveThreshold, volumeInsideBuffer } from "./rules";
 import { MIN, nyDate, nyParts } from "./time";
 import { MARKET_SYMBOL, addMinutePrice, averageSide, evaluateFast, marketMove } from "./signals";
-import { NEWS_EVERY_MIN, NEWS_LOOKBACK_MS, foldNews } from "./news";
-import { adjustPrev, applySplit, fixRangeForSplit, sameSplit, scaleBarsForSplits, splitDoneKey, splitLevels, splitWindow, upcomingSplit, validSplit } from "./splits";
+import { NEWS_EVERY_MIN, NEWS_LOOKBACK_MS, NEWS_PER_RUN, foldNews } from "./news";
+import { adjustPrev, applySplit, fixRangeForSplit, sameSplit, scaleBarsForSplits, splitDoneKey, splitLevels, splitWarnKey, splitWindow, upcomingSplit, validSplit } from "./splits";
 import { W52_PER_RUN_PRE_OPEN, W52_PER_RUN_SESSION, buildYearRange, high52Threshold, low52Threshold, needYearRange, yearWindow } from "./yearrange";
 
 export interface Ports {
@@ -357,6 +357,7 @@ async function tick(
   if (due.length) await sendDueReminders(store, out, due, new Map([...mem].map(([k, v]) => [k, noted(v)])), backInside, nowMs, settingsFor);
 
   // --- news headlines (silent, information only): one call for the whole list every second run
+  const newsEvents: OutboundEvent[] = [];
   const newsOn = liveStocks.filter((s) => s.news);
   if (newsOn.length && market.news) {
     const first = Math.max(session.open, nowMs - NEWS_LOOKBACK_MS);
@@ -373,12 +374,18 @@ async function tick(
       const cur = mem.get(s.symbol)!;
       const r = foldNews(cur.news, s.symbol, list, nowMs, first);
       if (!r.changed) continue;
+      if (r.send && newsEvents.length >= NEWS_PER_RUN) {
+        // Over the per-run cap: the headlines stay waiting for the next run (call budget).
+        r.state = { ...r.state, pending: r.send.items, ...(r.send.more ? { more: r.send.more } : {}), ...(cur.news?.sentMs !== undefined ? { sentMs: cur.news.sentMs } : {}) };
+        if (cur.news?.sentMs === undefined) delete r.state.sentMs;
+        delete r.send;
+      }
       const next = { ...cur, news: r.state };
       mem.set(s.symbol, next);
       const i = toWrite.findIndex((x) => x.symbol === s.symbol);
       if (i >= 0) toWrite[i] = next;
       else toWrite.push(next);
-      if (r.send) await emit(store, out, { type: "NEWS", symbol: s.symbol, items: r.send.items, more: r.send.more }, nowMs);
+      if (r.send) newsEvents.push({ type: "NEWS", symbol: s.symbol, items: r.send.items, more: r.send.more });
     }
   }
 
@@ -387,6 +394,8 @@ async function tick(
 
   // --- writes
   if (toWrite.length) await store.putMarketStates(toWrite);
+  // News after its state is stored: a failed run may lose a headline message, never send it twice.
+  if (newsEvents.length) await emitMany(store, out, newsEvents, nowMs);
   await store.setLastSuccessfulPollMs(nowMs);
   m.events += out.events;
   await flush(store, out, date);
@@ -581,21 +590,29 @@ export async function runPreOpen(ports: Ports, nowMs: number, opts: TickOptions 
         .filter((x): x is { s: StockConfig; up: NonNullable<typeof x.up> } => !!x.up && !sameSplit(x.s.splitPlan, x.up));
       if (due.length) {
         const seen = await store.getCounters("meta");
-        const fresh2 = due.filter((x) => !seen[`split:${x.s.symbol}:${x.up.exDate}`] && !seen[splitDoneKey(x.s.symbol, x.up.exDate)]).slice(0, 5);
+        const fresh2 = due.filter((x) => !seen[splitWarnKey(x.s.symbol, x.up)] && !seen[splitDoneKey(x.s.symbol, x.up.exDate)]).slice(0, 5);
         if (fresh2.length) {
           // Markers first: a lost warning is better than two.
-          await store.bumpCounters("meta", Object.fromEntries(fresh2.map((x) => [`split:${x.s.symbol}:${x.up.exDate}`, 1])));
+          await store.bumpCounters("meta", Object.fromEntries(fresh2.map((x) => [splitWarnKey(x.s.symbol, x.up), 1])));
           const out = newOut();
           await emitMany(store, out, fresh2.map((x) => ({ type: "SPLIT", symbol: x.s.symbol, split: x.up, levels: splitLevels(x.s) })), nowMs);
           m.events += out.events;
         }
       }
       // The split day of an "Adjust on <day>" choice: convert the levels before the open.
-      for (const s of active) {
-        const plan = s.splitPlan;
-        if (!plan || plan.exDate > date || m.calls >= CALL_BUDGET - TAIL - 4) continue;
+      const plans = active.filter((s) => s.splitPlan && s.splitPlan.exDate <= date);
+      const done = plans.length ? await store.getCounters("meta") : {};
+      const nowStocks = plans.length ? new Map((await store.listStocks()).map((x) => [x.symbol, x])) : new Map<string, StockConfig>();
+      for (const s0 of plans) {
+        const s = nowStocks.get(s0.symbol); // re-read: a tap or an edit since the start of this run wins
+        const plan = s?.splitPlan;
+        if (!s || !plan || plan.exDate > date || m.calls >= CALL_BUDGET - TAIL - 4) continue;
         const still = (ms.get(s.symbol)?.splits ?? []).some((x) => sameSplit(x, plan));
-        if (still) {
+        if (still && done[splitDoneKey(s.symbol, plan.exDate)]) {
+          const next = { ...s }; // already converted by an "Adjust now" tap
+          delete next.splitPlan;
+          await store.putStock(next);
+        } else if (still) {
           const r = applySplit(s, plan);
           await store.bumpCounters("meta", { [splitDoneKey(s.symbol, plan.exDate)]: 1 }); // a late "Adjust now" tap never converts twice
           await store.putStock(r.stock);

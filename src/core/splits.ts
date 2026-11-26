@@ -15,13 +15,19 @@ export const SPLIT_AHEAD_DAYS = 90;
 
 export const splitWindow = (date: TradingDate): { start: TradingDate; end: TradingDate } => ({ start: addDays(date, -SPLIT_BACK_DAYS), end: addDays(date, SPLIT_AHEAD_DAYS) });
 export const splitFactor = (s: SplitInfo): number => s.newRate / s.oldRate;
-export const validSplit = (s: SplitInfo): boolean =>
-  /^\d{4}-\d{2}-\d{2}$/.test(s.exDate) && s.oldRate > 0 && s.newRate > 0 && Number.isFinite(s.oldRate) && Number.isFinite(s.newRate) && s.oldRate !== s.newRate;
+/** A usable split: real date, positive finite rates, factor between 1/1000 and 1000 (anything else is bad provider data). */
+export const validSplit = (s: SplitInfo): boolean => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s.exDate) || !(s.oldRate > 0) || !(s.newRate > 0) || !Number.isFinite(s.oldRate) || !Number.isFinite(s.newRate)) return false;
+  const f = s.newRate / s.oldRate;
+  return f !== 1 && f >= 0.001 && f <= 1000;
+};
 export const sameSplit = (a: SplitInfo | undefined, b: SplitInfo | undefined): boolean =>
   !!a && !!b && a.exDate === b.exDate && a.oldRate === b.oldRate && a.newRate === b.newRate;
 /** "4-for-1", "1-for-10" (rates as given, trimmed of trailing zeros). */
 export const splitRatioText = (s: SplitInfo): string => `${+s.newRate.toFixed(4)}-for-${+s.oldRate.toFixed(4)}`;
 
+/** Counter ("meta" scope) set once a warning was queued for this exact split. */
+export const splitWarnKey = (symbol: string, s: SplitInfo): string => `split:${symbol}:${s.exDate}:${s.newRate}:${s.oldRate}`;
 /** Counter ("meta" scope) set once a split was applied to a stock's levels. */
 export const splitDoneKey = (symbol: string, exDate: TradingDate): string => `splitdone:${symbol}:${exDate}`;
 
@@ -101,10 +107,12 @@ export function convertLevels(l: SplitLevels, split: SplitInfo): SplitLevels {
   return out;
 }
 
-/** Applies a split to a stock's levels; the plan is removed. */
+/** Applies a split to a stock's levels; the plan is removed. Bad data or a result out of range converts nothing. */
 export function applySplit(s: StockConfig, split: SplitInfo): { stock: StockConfig; from: SplitLevels; to: SplitLevels } {
   const from = splitLevels(s);
-  const to = convertLevels(from, split);
+  let to = validSplit(split) ? convertLevels(from, split) : from;
+  const okPrice = (p: number | undefined) => p === undefined || (Number.isFinite(p) && p > 0 && p <= 1_000_000);
+  if (!okPrice(to.low) || !okPrice(to.high) || (to.volume !== undefined && !(Number.isFinite(to.volume) && to.volume >= 1 && to.volume <= 1e12))) to = from;
   const stock: StockConfig = { ...s };
   delete stock.splitPlan;
   if (to.low !== undefined) stock.low = { mode: "dollar", value: to.low };

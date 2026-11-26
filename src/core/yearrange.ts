@@ -50,5 +50,7 @@ export function buildYearRange(date: TradingDate, bars: Bar[] | undefined): Year
 
 /** Stocks that still need today's range (every enabled stock: the card shows the range even with the switch off). */
 export function needYearRange(stocks: StockConfig[], states: Map<string, MarketState>, date: TradingDate, limit: number): StockConfig[] {
-  return stocks.filter((s) => states.get(s.symbol)?.w52?.date !== date).slice(0, Math.max(0, limit));
+  // A range without lastClose was stored by an older version (no 50/200-day averages): rebuild it.
+  const stale = (w: MarketState["w52"]) => w?.date !== date || (w.sessions > 0 && w.lastClose === undefined);
+  return stocks.filter((s) => stale(states.get(s.symbol)?.w52)).slice(0, Math.max(0, limit));
 }

@@ -184,7 +184,7 @@ function buildAll() {
   if (!d) return [];
   const mc = marketNow();
   const byId = new Map((d.market || []).map((m) => [m.symbol, m]));
-  return (d.stocks || []).map((s0) => { const s = S.pend.has(s0.symbol) ? { ...s0, paused: S.pend.get(s0.symbol) } : s0; return L.buildVM(s, byId.get(s.symbol), d.rules || [], d.settings, nowMs(), mc.open, { offline: S.conn === "offline", pausedAll: !!d.pausedAll }); });
+  return (d.stocks || []).map((s0) => { const s = S.pend.has(s0.symbol) ? { ...s0, paused: S.pend.get(s0.symbol) } : s0; return L.buildVM(s, byId.get(s.symbol), d.rules || [], d.settings, nowMs(), mc.open, { offline: S.conn === "offline", pausedAll: !!d.pausedAll, splitDone: d.splitDone || [] }); });
 }
 const getVM = (sym) => buildAll().find((v) => v.sym === sym);
 const activeRules = () => (S.data?.rules || []).filter(L.isActiveRule);
@@ -948,9 +948,8 @@ function splitSheet(v) {
     const btns = [yes, no];
     put(root, sheetTitle("Adjust " + v.sym + " for the split"), h("p", { class: "sm", text: L.splitSentence(sp) }),
       h("table", { class: "tbl" }, h("tbody", {}, rows.map((r) => h("tr", {}, h("td", { text: r.label }), h("td", { class: "num", text: r.from }), h("td", { class: "ar", "aria-label": "becomes", text: "→" }), h("td", { class: "num", text: r.to }))))),
-      h("p", { class: "sm dm", text: planned ? "Scheduled: applied before the open on " + L.dayLabel(sp.exDate) + "." : today ? "Applied at once. % levels need no change." : "Applied before the open on " + L.dayLabel(sp.exDate) + ", only after this tap. % levels need no change." }),
-      err, h("div", { class: "dact" }, yes, no),
-      h("div", { class: "dact" }, h("button", { type: "button", class: "btn", text: "Close", onclick: cancelSheet })));
+      h("p", { class: "sm dm", text: planned ? "Scheduled: applied before the open on " + L.dayLabel(sp.exDate) + "." : today ? "Applied at once. % levels need no change." : "Applied before the open on " + L.dayLabel(sp.exDate) + ". Nothing changes unless you tap Adjust. % levels need no change." }),
+      err, h("div", { class: "dact nw" }, yes, no));
   });
 }
 function muteSheet(v) {

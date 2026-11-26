@@ -197,7 +197,7 @@ export function attentionLine(vm, nowMs) {
     return { tone: "red", title: title.trim(), sub: more };
   }
   const sp = vm.split;
-  if (sp) {
+  if (sp && !vm.splitDone) {
     const planned = sameSplit(vm.stock?.splitPlan, sp);
     const lv = splitRows(vm.stock || {}, sp);
     const sub = planned ? "Your levels adjust before the open that day" : lv.length ? "Your " + lv.map((r) => r.label).join(" and ") + " will be wrong after it" : "Your levels are in % or x usual: no change needed";
@@ -308,7 +308,8 @@ export function buildVM(stock, market, rules, settings, nowMs, marketOpen, flags
     sym: stock.symbol, stock, status, near, muted, paused, pausedAll: !!flags.pausedAll, notes: stock.notes || "",
     last, lastT, ageS, fresh: fr, prev, open: market?.open, dayHigh: market?.dayHigh, dayLow: market?.dayLow, cumVolume: market?.cumVolume,
     high: hi, low: lo, hiP, loP, vol: stock.volume, range52: !!stock.range52, w52: market?.w52,
-    fast: stock.fast, averages: !!stock.averages, news: !!stock.news, split: upcomingSplit(market?.splits, market?.date || ""), volAvgMultiple: market?.baseline?.multiple, baseline: market?.baseline,
+    fast: stock.fast, averages: !!stock.averages, news: !!stock.news, split: upcomingSplit(market?.splits, market?.date || ""),
+    splitDone: (() => { const u = upcomingSplit(market?.splits, market?.date || ""); return !!u && (flags.splitDone || []).includes(stock.symbol + ":" + u.exDate); })(), volAvgMultiple: market?.baseline?.multiple, baseline: market?.baseline,
     changeAbs: Number.isFinite(last) && Number.isFinite(prev) ? last - prev : NaN,
     changePct: Number.isFinite(last) && Number.isFinite(prev) && prev !== 0 ? ((last - prev) / prev) * 100 : NaN,
     nearest, active, acked, atClose,

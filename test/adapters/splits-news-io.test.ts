@@ -97,6 +97,14 @@ describe("telegram: split warning and news", () => {
     expect(r.text).toContain("Plain one\n<i>reuters · 10:31 ET</i>");
     expect(L.at(-1)).toBe("+2 more headlines");
   });
+  it("news: a cut never splits an escaped character; the source line stays within 38", () => {
+    const r = renderGlance({ type: "NEWS", symbol: "TSLA", more: 0, items: [
+      { id: 1, tMs: et(D, "16:26"), headline: "Aaaa bbbb cccc dddd eeee ffff gggg hhhh iiii jjjj kkkk llll mmmm nnnn & oooo pppp qqqq rrrr", source: "A very long source name that goes on", url: "https://e.com/1" },
+      { id: 2, tMs: et(D, "16:20"), headline: "x", source: "s" },
+    ] }, { nowMs: et(D, "16:30") });
+    expect(r.text).not.toMatch(/&(amp|lt|gt)?(?![a-z]*;)/);
+    for (const l of lines(r.text)) expect(glanceWidth(l.replace(/<[^>]+>/g, ""))).toBeLessThanOrEqual(38);
+  });
 });
 
 // ------------------------------------------------------------ worker flows
@@ -138,6 +146,9 @@ describe("split choice: API and Telegram button", () => {
     const ex = await (await api("/api/export")).text();
     expect(ex).not.toContain("splitPlan");
     expect(await (await api("/api/split", { symbol: "AAPL", exDate: "2026-12-07", adjust: false })).json()).toMatchObject({ choice: "left" });
+    await api("/api/split", { symbol: "AAPL", exDate: "2026-12-07", adjust: true });
+    await api("/api/stocks/AAPL", { high: { mode: "dollar", value: 210 } }, "PUT"); // a hand edit cancels the plan
+    expect((await stock()).splitPlan).toBeUndefined();
     expect((await stock()).splitPlan).toBeUndefined();
   });
   it("on the split day Adjust converts at once, only once", async () => {
@@ -147,6 +158,7 @@ describe("split choice: API and Telegram button", () => {
     expect(await stock()).toMatchObject({ high: { mode: "dollar", value: 50 }, low: { mode: "dollar", value: 37.5 } });
     const again = await api("/api/split", { symbol: "AAPL", exDate: "2026-11-25", adjust: true });
     expect(again.status).toBe(409);
+    expect(((await (await api("/api/state")).json()) as { splitDone: string[] }).splitDone).toEqual(["AAPL:2026-11-25"]);
     expect((await stock()).high).toEqual({ mode: "dollar", value: 50 });
   });
   it("unknown split, bad input and a split day in the past are refused without change", async () => {

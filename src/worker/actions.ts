@@ -45,20 +45,17 @@ export async function chooseSplit(
   if (exDate < date) throw new ApiError(409, "SPLIT_PASSED", "The split day has passed. Change the levels by hand if needed.");
   const key = splitDoneKey(symbol, exDate);
   if ((await ctx.store.getCounters("meta"))[key]) throw new ApiError(409, "SPLIT_DONE", "The levels were already adjusted for this split.");
-  await ctx.store.bumpCounters("meta", { [key]: 1 }); // marker first: never converts twice
   const r = applySplit(stock, split);
   const patch: Record<string, unknown> = { symbol, confirm: true };
   if (r.to.low !== undefined) patch.low = { mode: "dollar", value: r.to.low };
   if (r.to.high !== undefined) patch.high = { mode: "dollar", value: r.to.high };
   if (r.to.volume !== undefined) patch.volume = { mode: "absolute", value: r.to.volume };
-  await saveStock(ctx, patch, { mode: "update" });
-  if (stock.splitPlan) {
-    const now = (await ctx.store.listStocks()).find((s) => s.symbol === symbol);
-    if (now?.splitPlan) {
-      const next = { ...now };
-      delete next.splitPlan;
-      await ctx.store.putStock(next);
-    }
+  await ctx.store.bumpCounters("meta", { [key]: 1 }); // marker first: never converts twice
+  try {
+    await saveStock(ctx, patch, { mode: "update" }); // a level change also clears a stored plan
+  } catch (e) {
+    await ctx.store.bumpCounters("meta", { [key]: -1 }).catch(() => undefined); // not converted: allow a retry
+    throw e;
   }
   await ctx.store.log([{ tMs: ctx.now(), kind: "SETTINGS_CHANGE", symbol, detail: { what: "split_adjust", split, from: r.from, to: r.to } }]);
   return { choice: "applied", split, to: r.to };
@@ -88,6 +85,7 @@ export async function saveStock(ctx: Ctx, body: unknown, opts: SaveOptions): Pro
   const prev = ms?.prev?.close;
   checkBand(stock, prev);
   const changed = changedRules(existing, stock);
+  if (stock.splitPlan && changed.some((r) => r === "HIGH" || r === "LOW" || r === "VOLUME")) delete stock.splitPlan;
   if (confirm !== true && changed.length > 0 && stock.enabled) {
     const hits = wouldAlertNow(stock, ms?.last?.p, prev).filter((r) => changed.includes(r));
     if (hits.length > 0) {

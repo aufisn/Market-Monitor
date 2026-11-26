@@ -555,15 +555,28 @@ function splitApplied(ev: Extract<OutboundEvent, { type: "SPLIT_APPLIED" }>): Re
 }
 
 // ------------------------------------------------------------ news headlines (silent)
+/** A headline in at most two lines: the PLAIN text is cut at a word and given "…" before it is escaped. */
+function twoLines(text: string): string[] {
+  let lines = wrapPlain(text);
+  if (lines.length <= 2) return lines;
+  const words = text.replace(/\s+/g, " ").trim().split(" ");
+  while (words.length > 1) {
+    words.pop();
+    lines = wrapPlain(`${words.join(" ")}…`);
+    if (lines.length <= 2) return lines;
+  }
+  return wrapPlain(`${Array.from(text).slice(0, 70).join("")}…`).slice(0, 2);
+}
 function news(ev: Extract<OutboundEvent, { type: "NEWS" }>): Rendered {
   const newest = ev.items.reduce((t, x) => Math.max(t, x.tMs), 0);
   const L = [`📰 <b>${e(ev.symbol)}</b> · ${etOnly(newest)}`];
   for (const it of ev.items) {
-    let lines = wrapPlain(it.headline);
-    if (lines.length > 2) lines = [lines[0] as string, `${(lines[1] as string).replace(/.$/u, "")}…`];
     const url = cleanLinkUrl(it.url);
+    const lines = twoLines(it.headline);
     L.push(url ? `<a href="${e(url)}">${lines.join("\n")}</a>` : lines.join("\n"));
-    L.push(`<i>${e(it.source.slice(0, 30) || "News")}${ev.items.length > 1 ? ` · ${etOnly(it.tMs)}` : ""}</i>`);
+    const src = it.source.replace(/\s+/g, " ").trim().slice(0, 24).trim() || "News";
+    const withTime = `${src} · ${etOnly(it.tMs)}`;
+    L.push(`<i>${e(ev.items.length > 1 && glanceWidth(withTime) <= 38 ? withTime : src)}</i>`);
   }
   if (ev.more > 0) L.push(`+${ev.more} more headline${ev.more === 1 ? "" : "s"}`);
   return { text: body(L), silent: true };

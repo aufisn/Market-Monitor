@@ -8,6 +8,8 @@ import { MIN } from "./time";
 export const NEWS_GAP_MS = 15 * MIN;
 /** Headlines shown in one message (newest first); the rest are counted as "+N more". */
 export const NEWS_SHOWN = 3;
+/** At most this many news messages per run (one batched enqueue); the rest wait for the next run. */
+export const NEWS_PER_RUN = 5;
 /** News is checked on every second run (one call for the whole watchlist). */
 export const NEWS_EVERY_MIN = 2;
 /** A stock seen for the first time today gets headlines from the last 15 minutes, never older. */
