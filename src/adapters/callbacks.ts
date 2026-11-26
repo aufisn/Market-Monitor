@@ -15,6 +15,7 @@
  *   E                    "Mark all seen" on Unacknowledged at close
  *   v|SYM|FIELD          save a pending /set that would alert at once
  *   z|SYM|FIELD          cancel that pending /set
+ *   s|SYM|YYYYMMDD|1|0   split warning: 1 = adjust the levels on that split day, 0 = leave as is
  */
 import type { RuleKind } from "../core/ports";
 
@@ -33,7 +34,8 @@ export type CallbackAction =
   | { type: "briefdetails" }
   | { type: "seen" }
   | { type: "saveset"; symbol: string; field: SetField }
-  | { type: "cancelset"; symbol: string; field: SetField };
+  | { type: "cancelset"; symbol: string; field: SetField }
+  | { type: "split"; symbol: string; exDate: string; adjust: boolean };
 
 export const SYMBOL_RE = /^[A-Z][A-Z0-9]{0,4}([.-][A-Z])?$/;
 const RULES = new Set(["HIGH", "LOW", "VOLUME", "HIGH52", "LOW52", "FAST", "MA50", "MA200"]);
@@ -52,6 +54,7 @@ export const encodeBriefDetails = (): string => "D";
 export const encodeSeen = (): string => "E";
 export const encodeSaveSet = (symbol: string, field: SetField): string => `v|${symbol}|${field}`;
 export const encodeCancelSet = (symbol: string, field: SetField): string => `z|${symbol}|${field}`;
+export const encodeSplit = (symbol: string, exDate: string, adjust: boolean): string => `s|${symbol}|${exDate.replace(/-/g, "")}|${adjust ? 1 : 0}`;
 
 export function decodeCallback(data: unknown): CallbackAction | null {
   if (typeof data !== "string" || data.length > 64) return null;
@@ -94,6 +97,9 @@ export function decodeCallback(data: unknown): CallbackAction | null {
     const r = rule as RuleKind;
     if (kind === "c") return { type: "cancelchooser", symbol: sym, rule: r };
     if (kind === "d") return { type: "details", symbol: sym, rule: r };
+  }
+  if (kind === "s" && p.length === 4 && /^\d{8}$/.test(rule) && (p[3] === "0" || p[3] === "1")) {
+    return { type: "split", symbol: sym, exDate: `${rule.slice(0, 4)}-${rule.slice(4, 6)}-${rule.slice(6)}`, adjust: p[3] === "1" };
   }
   if (p.length === 3 && FIELDS.has(rule)) {
     if (kind === "v") return { type: "saveset", symbol: sym, field: rule as SetField };

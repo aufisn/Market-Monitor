@@ -30,7 +30,7 @@ const stocks = [
   mk("AAPL", { high: { mode: "dollar", value: 200 }, low: { mode: "dollar", value: 180 }, volume: { mode: "multiple", value: 2 } }),
   mk("JPM", { high: { mode: "percent", value: 5 }, low: { mode: "percent", value: -5 } }),
   mk("TSLA", { high: { mode: "dollar", value: 260 }, low: { mode: "dollar", value: 225 }, volume: { mode: "absolute", value: 30000000 }, range52: true, fast: { pct: 3, minutes: 15 } }),
-  mk("AMZN", { high: { mode: "dollar", value: 190 }, low: { mode: "dollar", value: 170 } }),
+  mk("AMZN", { high: { mode: "dollar", value: 190 }, low: { mode: "dollar", value: 170 }, news: true }),
   mk("NVDA", { high: { mode: "dollar", value: 145 }, low: { mode: "dollar", value: 130 }, volume: { mode: "multiple", value: 2 }, range52: true }),
   mk("MSFT", { high: { mode: "dollar", value: 435 }, low: { mode: "dollar", value: 420 } }),
   mk("XOM", { high: { mode: "dollar", value: 118 }, low: { mode: "dollar", value: 104 } }),
@@ -43,6 +43,7 @@ const market = () => Object.entries(px).map(([symbol, [last, prev, open, age, vo
   symbol, date: "2026-11-24", last: { t: Date.now() - age * 1000 * (scenario === "delayed" ? 1 : 1), p: last, s: 100 }, open, dayHigh: Math.max(last, open) + 0.6, dayLow: Math.min(last, open) - 0.7, cumVolume: vol,
   prev: { symbol, date: "2026-11-23", close: prev, high: prev + 1.4, low: prev - 1.9, volume: vol * 4 }, lastPollMs: Date.now() - 12000,
   ...(symbol === "XOM" ? {} : { w52: { date: "2026-11-24", sessions: symbol === "PLTR" ? 120 : 251, high: symbol === "NVDA" ? 145.3 : +(last * 1.25).toFixed(2), highDate: "2026-03-12", low: +(last * 0.7).toFixed(4), lowDate: "2026-06-02", ma50: +(last * 1.04).toFixed(2), ma200: +(last * 0.998).toFixed(2), lastClose: prev } }),
+  ...(symbol === "AAPL" ? { splits: [{ exDate: "2026-12-07", oldRate: 1, newRate: 4 }] } : {}),
   baseline: symbol === "TSLA" ? { status: "BUILDING" } : symbol === "XOM" ? { status: "NO_BASELINE" } : { status: "OK", multiple: 1.4, avgCumNow: vol / 1.4, thresholdShares: Math.round(vol / 1.4 * 2) },
 }));
 const initialRules = () => [
@@ -95,7 +96,7 @@ async function api(req, res, url) {
     if (m === "DELETE") { stocks.splice(i, 1); return J(res, 200, { ok: true }); }
     const b = await body(req);
     const next = { ...stocks[i] };
-    for (const k of ["high", "low", "volume", "range52", "fast", "averages"]) if (b[k] !== undefined) { if (b[k] === null || b[k] === false) delete next[k]; else next[k] = b[k]; }
+    for (const k of ["high", "low", "volume", "range52", "fast", "averages", "news"]) if (b[k] !== undefined) { if (b[k] === null || b[k] === false) delete next[k]; else next[k] = b[k]; }
     if (b.paused !== undefined) next.paused = b.paused;
     if (b.notes !== undefined) { if (b.notes === null || b.notes === "") delete next.notes; else next.notes = b.notes; }
     if (sym === "PLTR" && b.paused !== undefined && scenario === "failswitch") return J(res, 500, { error: "INTERNAL", message: "Something went wrong on the server." });
@@ -114,6 +115,14 @@ async function api(req, res, url) {
     let n = 0;
     rules = rules.map((r) => { if ((r.state === "TRIGGERED" || r.state === "REPEATING") && (b.all || (r.symbol === b.symbol && (!b.rule || b.rule === r.rule)))) { n++; return { ...r, state: "ACKNOWLEDGED", ackMs: Date.now(), ackBy: "dashboard", nextReminderMs: undefined }; } return r; });
     return J(res, 200, { acknowledged: n });
+  }
+  if (p === "/api/split" && m === "POST") {
+    const b = await body(req); const s = stocks.find((x) => x.symbol === b.symbol);
+    if (!s) return J(res, 404, { error: "NOT_FOUND", message: "Not on the watchlist." });
+    const sp = market().find((x) => x.symbol === b.symbol)?.splits?.find((x) => x.exDate === b.exDate);
+    if (!sp) return J(res, 409, { error: "SPLIT_UNKNOWN", message: "This split is no longer listed. Nothing was changed." });
+    if (b.adjust) s.splitPlan = sp; else delete s.splitPlan;
+    return J(res, 200, { ok: true, choice: b.adjust ? "planned" : "left" });
   }
   if (p === "/api/mute" && m === "POST") {
     const b = await body(req); const s = stocks.find((x) => x.symbol === b.symbol);

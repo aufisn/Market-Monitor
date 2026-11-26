@@ -66,4 +66,22 @@ assert.deepEqual(L.moreOn({ range52: true, fast: { pct: 3, minutes: 15 } }), ["5
 assert.equal(L.attentionLine({ active: [] }), null);
 assert.deepEqual(L.attentionLine({ active: [{ rule: "FAST", t0Ms: 2, t0Value: 96.6, thresholdAtT0: 100 }, { rule: "HIGH", t0Ms: 1, thresholdAtT0: 110 }], fast: { minutes: 15 } }), { tone: "red", title: "Fast move ▼3.4% within 15 min", sub: "and 1 more alert" });
 assert.equal(L.attentionLine({ active: [{ rule: "MA200", t0Ms: 1, t0Value: 99, thresholdAtT0: 100 }] }).title, "Crossed below the 200-day average");
+// News switch and split warning (step 7)
+assert.deepEqual(L.checkStockForm({ ...base, averages: true, news: true }).body, { symbol: "NVDA", averages: true, news: true });
+assert.match(L.checkStockForm({ ...base, news: true }).err, /at least one/); // news alone is information, not an alert
+assert.equal(L.checkStockForm({ ...ed, news: true }).body.news, true);
+assert.deepEqual(L.moreOn({ averages: true, news: true }), ["Avg", "News"]);
+const SP = { exDate: "2026-12-07", oldRate: 1, newRate: 4 };
+assert.equal(L.dayLabel("2026-12-07"), "Mon 7 Dec");
+assert.equal(L.splitRatio({ exDate: "x", oldRate: 10, newRate: 1 }), "1-for-10");
+assert.deepEqual(L.upcomingSplit([{ ...SP, exDate: "2026-11-01" }, SP], "2026-11-24"), SP);
+assert.equal(L.upcomingSplit([{ ...SP, exDate: "2026-11-01" }], "2026-11-24"), null);
+const st = { symbol: "NVDA", low: { mode: "dollar", value: 130 }, high: { mode: "percent", value: 5 }, volume: { mode: "absolute", value: 100000 } };
+assert.deepEqual(L.splitRows(st, SP), [{ label: "LOW", from: "$130.00", to: "$32.50" }, { label: "Volume", from: "100,000", to: "400,000" }]);
+assert.deepEqual(L.attentionLine({ active: [], split: SP, stock: st }), { tone: "amber", title: "Split 4-for-1 on Mon 7 Dec", sub: "Your LOW and Volume will be wrong after it", review: true });
+assert.equal(L.attentionLine({ active: [], split: SP, stock: { ...st, splitPlan: SP } }).sub, "Your levels adjust before the open that day");
+assert.equal(L.attentionLine({ active: [], split: SP, stock: { symbol: "X", high: { mode: "percent", value: 5 } } }).review, false);
+assert.equal(L.attentionLine({ active: [{ rule: "HIGH", t0Ms: 1, thresholdAtT0: 110 }], split: SP, stock: st }).tone, "red"); // an alert comes first
+assert.match(L.splitSentence(SP), /each share becomes 4, so prices divide by 4/);
+assert.match(L.splitSentence({ ...SP, oldRate: 10, newRate: 1 }), /every 10 shares become 1, so prices multiply by 10/);
 console.log("lib-check ok");

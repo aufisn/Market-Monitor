@@ -12,13 +12,15 @@ import { sessionFor } from "../core/calendar";
 import type { Baseline, EodAlert, EodStock, MarketState, OutboundEvent, RuleKind, RuleState, StockConfig } from "../core/ports";
 import { avgCumAt, resolveThreshold } from "../core/rules";
 import { fastMovePct } from "../core/signals";
-import { MIN, nyLocalToUtc } from "../core/time";
+import { MIN, nyDate, nyLocalToUtc } from "../core/time";
 import {
   encodeAck, encodeAckMove, encodeAckStock, encodeBriefDetails, encodeCancelChooser, encodeChooser, encodeDetails,
-  encodeMute, encodeSeen, encodeTyped,
+  encodeMute, encodeSeen, encodeSplit, encodeTyped,
 } from "./callbacks";
+import { splitRatioText } from "../core/splits";
+import type { SplitInfo, SplitLevels } from "../core/ports";
 import {
-  ICON, RULE_LABEL, arrowPct, both, e, etOnly, f2, glanceWidth, minutesText, mult, mult1, num, pack, pctOf, priceDecimals, sgn, shortDate, sp, vol, wrapPlain,
+  ICON, RULE_LABEL, arrowPct, both, cleanLinkUrl, e, etOnly, f2, glanceWidth, minutesText, mult, mult1, num, pack, pctOf, priceDecimals, sgn, shortDate, sp, vol, wrapPlain,
 } from "./glance-fmt";
 import type { Button, Rendered } from "./telegram";
 
@@ -508,6 +510,65 @@ export function renderTestReminder(n: number, nowMs: number, dashboardUrl?: stri
 export const renderTestAck = (nowMs: number): Rendered => ({ text: body(["🧪 <b>TEST</b> acknowledged", `Acknowledged ${both(nowMs)}`, "Nothing real was affected."]) });
 export const renderTestEnded = (nowMs: number): Rendered => ({ text: body(["🧪 <b>TEST ENDED</b>", "Test ended – no acknowledgment", "No more test reminders.", both(nowMs)]) });
 
+// ------------------------------------------------------------ split warning (design step 7)
+const splitHead = (symbol: string, s: SplitInfo): string => {
+  const kind = s.newRate > s.oldRate ? "splits" : "reverse split";
+  const one = `✂️ <b>${e(symbol)} ${kind} ${splitRatioText(s)}</b> on ${shortDate(s.exDate)}`;
+  return glanceWidth(one) <= 38 ? one : `✂️ <b>${e(symbol)} ${kind} ${splitRatioText(s)}</b>\non ${shortDate(s.exDate)}`;
+};
+const levelsText = (l: SplitLevels): string =>
+  [l.low !== undefined ? `LOW ${f2(l.low)}` : "", l.high !== undefined ? `HIGH ${f2(l.high)}` : "", l.volume !== undefined ? `volume ${vol(l.volume)}` : ""].filter(Boolean).join(", ");
+const hasLevels = (l: SplitLevels): boolean => l.low !== undefined || l.high !== undefined || l.volume !== undefined;
+
+/** Notifies once. Nothing changes without the Adjust tap; percent levels need no change (no buttons then). */
+export function renderSplit(ev: Extract<OutboundEvent, { type: "SPLIT" }>, nowMs: number): Rendered {
+  const L = [splitHead(ev.symbol, ev.split)];
+  if (!hasLevels(ev.levels)) {
+    L.push("Your levels are in % or x usual:", "no change needed.");
+    return { text: body(L) };
+  }
+  L.push(...wrapPlain(`Your ${levelsText(ev.levels)} will be wrong after it.`));
+  const today = ev.split.exDate <= nyDate(nowMs);
+  return {
+    text: body(L),
+    buttons: [[
+      { text: today ? "✅ Adjust now" : `✅ Adjust on ${shortDate(ev.split.exDate).replace(/^\w+ /, "")}`, data: encodeSplit(ev.symbol, ev.split.exDate, true) },
+      { text: "Leave as is", data: encodeSplit(ev.symbol, ev.split.exDate, false) },
+    ]],
+  };
+}
+/** The edit after a tap on the split warning (buttons removed). */
+export function renderSplitChoice(symbol: string, split: SplitInfo, choice: "planned" | "applied" | "left", to?: SplitLevels): Rendered {
+  const L = [splitHead(symbol, split)];
+  if (choice === "planned") L.push(`Levels adjust before the open`, `on ${shortDate(split.exDate)}.`);
+  else if (choice === "applied") L.push(...wrapPlain(`Adjusted now: ${to ? levelsText(to) : "levels"}.`));
+  else L.push("Levels left as they are.");
+  return { text: body(L) };
+}
+function splitApplied(ev: Extract<OutboundEvent, { type: "SPLIT_APPLIED" }>): Rendered {
+  const L = [`✂️ <b>${e(ev.symbol)} levels adjusted</b> · ${splitRatioText(ev.split)}`];
+  if (ev.from.low !== undefined && ev.to.low !== undefined) L.push(`LOW ${f2(ev.from.low)} → ${f2(ev.to.low)}`);
+  if (ev.from.high !== undefined && ev.to.high !== undefined) L.push(`HIGH ${f2(ev.from.high)} → ${f2(ev.to.high)}`);
+  if (ev.from.volume !== undefined && ev.to.volume !== undefined) L.push(`Volume ${vol(ev.from.volume)} → ${vol(ev.to.volume)}`);
+  if (L.length === 1) L.push("Nothing needed a change.");
+  return { text: body(L), silent: true };
+}
+
+// ------------------------------------------------------------ news headlines (silent)
+function news(ev: Extract<OutboundEvent, { type: "NEWS" }>): Rendered {
+  const newest = ev.items.reduce((t, x) => Math.max(t, x.tMs), 0);
+  const L = [`📰 <b>${e(ev.symbol)}</b> · ${etOnly(newest)}`];
+  for (const it of ev.items) {
+    let lines = wrapPlain(it.headline);
+    if (lines.length > 2) lines = [lines[0] as string, `${(lines[1] as string).replace(/.$/u, "")}…`];
+    const url = cleanLinkUrl(it.url);
+    L.push(url ? `<a href="${e(url)}">${lines.join("\n")}</a>` : lines.join("\n"));
+    L.push(`<i>${e(it.source.slice(0, 30) || "News")}${ev.items.length > 1 ? ` · ${etOnly(it.tMs)}` : ""}</i>`);
+  }
+  if (ev.more > 0) L.push(`+${ev.more} more headline${ev.more === 1 ? "" : "s"}`);
+  return { text: body(L), silent: true };
+}
+
 // ------------------------------------------------------------ entry points
 /** All messages for one event (only the briefing can be more than one). */
 export function renderGlanceAll(ev: OutboundEvent, ctx: GlanceCtx): Rendered[] {
@@ -522,6 +583,9 @@ export function renderGlanceAll(ev: OutboundEvent, ctx: GlanceCtx): Rendered[] {
     case "SESSION_ENDED": return sessionEnded(ev);
     case "OPS_NOTICE": return [opsNotice(ev, ctx)];
     case "TEST_ALERT": return [testAlert(ctx)];
+    case "SPLIT": return [renderSplit(ev, ctx.nowMs)];
+    case "SPLIT_APPLIED": return [splitApplied(ev)];
+    case "NEWS": return [news(ev)];
   }
 }
 

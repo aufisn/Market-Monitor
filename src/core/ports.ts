@@ -51,6 +51,10 @@ export interface DailyRef {
   high: number;
   low: number;
   volume: number;
+  /** Set when the stored raw values were divided by a split that took effect after `date` (the factor used). */
+  splitFactor?: number;
+  /** The unadjusted close, kept when splitFactor is set. */
+  rawClose?: number;
 }
 
 export interface MarketData {
@@ -68,6 +72,29 @@ export interface MarketData {
    * keeps endMs at least 15 minutes in the past (free-plan SIP rule). Bars are oldest first.
    */
   officialDailyBars?(symbols: Symbol[], startMs: number, endMs: number, opts?: { splitAdjusted?: boolean }): Promise<Record<Symbol, Bar[]>>;
+  /** Optional (additive, split warning): forward and reverse splits with ex-date in [start, end], ONE call. */
+  splits?(symbols: Symbol[], start: TradingDate, end: TradingDate): Promise<Record<Symbol, SplitInfo[]>>;
+  /** Optional (additive, news headlines): headlines for many symbols created after sinceMs, newest first, ONE call. */
+  news?(symbols: Symbol[], sinceMs: number, limit: number): Promise<NewsHeadline[]>;
+}
+
+/** A stock split: each `oldRate` shares become `newRate` shares on `exDate` (4-for-1: old 1, new 4; 1-for-10: old 10, new 1). */
+export interface SplitInfo {
+  exDate: TradingDate;
+  oldRate: number;
+  newRate: number;
+}
+
+/** One news headline (plain text; the renderer escapes it). url is https only or missing. */
+export interface NewsItem {
+  id: number;
+  tMs: number;
+  headline: string;
+  source: string;
+  url?: string;
+}
+export interface NewsHeadline extends NewsItem {
+  symbols: Symbol[];
 }
 
 // ---------------------------------------------------------------- config
@@ -96,6 +123,10 @@ export interface StockConfig {
   fast?: FastInput;
   /** One switch for the 50- and 200-day average crossings (MA50, MA200). */
   averages?: boolean;
+  /** Silent news headlines (information only, not an alert). */
+  news?: boolean;
+  /** Set by "Adjust on <split day>": the levels are converted before the open on exDate. Never set through the stock form. */
+  splitPlan?: SplitInfo;
   mutedUntilMs?: number;
   paused?: boolean;
   notes?: string;
@@ -174,6 +205,10 @@ export interface MarketState {
   minutePrices?: [number, number][];
   /** Only on the copy carried by an alert event: the market's (SPY) move today in %, when it is at least 1%. */
   marketMovePct?: number;
+  /** Splits from 40 days back to 90 days ahead (checked once a day before the open); missing = none known. */
+  splits?: SplitInfo[];
+  /** News headlines: newest headline time seen, last message time, and headlines waiting for the 15-minute gap. */
+  news?: { seenMs: number; sentMs?: number; pending?: NewsItem[]; more?: number };
 }
 
 /**
@@ -278,6 +313,12 @@ export type OutboundEvent =
   | { type: "READY"; date: TradingDate; info: Record<string, unknown> }
   | { type: "SESSION_ENDED"; date: TradingDate; counts: Record<string, number>; eod?: EodSummary }
   | { type: "OPS_NOTICE"; code: string; detail: string }
+  /** Split announced: once per split. levels = the user's current dollar levels and share volume, for the message. */
+  | { type: "SPLIT"; symbol: Symbol; split: SplitInfo; levels: SplitLevels }
+  /** Levels converted on the split day (after "Adjust on <day>"). */
+  | { type: "SPLIT_APPLIED"; symbol: Symbol; split: SplitInfo; from: SplitLevels; to: SplitLevels }
+  /** News headlines for one stock (silent, at most one message per stock per 15 minutes). */
+  | { type: "NEWS"; symbol: Symbol; items: NewsItem[]; more: number }
 
   | { type: "TEST_ALERT" };
 
@@ -293,7 +334,17 @@ export const EVENT_PRIORITY: Record<OutboundEvent["type"], number> = {
   READY: 3,
   SESSION_ENDED: 3,
   OPS_NOTICE: 3,
+  SPLIT: 2,
+  SPLIT_APPLIED: 3,
+  NEWS: 3,
 };
+
+/** Dollar LOW / HIGH (percent levels are left out: they need no change) and a share-count volume limit. */
+export interface SplitLevels {
+  low?: number;
+  high?: number;
+  volume?: number;
+}
 
 export interface Notifier {
   /** Returns the Telegram message id, or throws. */

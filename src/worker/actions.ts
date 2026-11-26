@@ -9,10 +9,60 @@
 import { AlpacaError } from "../adapters/alpaca";
 import { nyDate } from "../adapters/util";
 import { acknowledge, acknowledgeAll, isActive, rearmAfterEdit } from "../core/alerts";
-import type { RuleKind, RuleState, StockConfig } from "../core/ports";
+import type { RuleKind, RuleState, SplitInfo, SplitLevels, StockConfig } from "../core/ports";
+import { applySplit, sameSplit, splitDoneKey } from "../core/splits";
 import { drainOutbound } from "./outbox";
 import type { Ctx } from "./env";
 import { ApiError, MAX_STOCKS, changedRules, checkBand, validateStockInput, validateSymbol, wouldAlertNow } from "./validate";
+
+/**
+ * The answer to a split warning (Telegram button or dashboard Review). adjust=true before the split day stores the
+ * plan (levels convert before the open that day); on the split day itself it converts at once, only once.
+ * adjust=false removes a stored plan. Never converts a split whose day has passed.
+ */
+export async function chooseSplit(
+  ctx: Ctx, symbolInput: string, exDate: string, adjust: boolean,
+): Promise<{ choice: "planned" | "applied" | "left"; split: SplitInfo; to?: SplitLevels }> {
+  const symbol = validateSymbol(symbolInput);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(exDate)) throw new ApiError(400, "INVALID_INPUT", "exDate: must be YYYY-MM-DD");
+  const date = nyDate(ctx.now());
+  const stock = (await ctx.store.listStocks()).find((s) => s.symbol === symbol);
+  if (!stock) throw new ApiError(404, "NOT_FOUND", `${symbol} is not on the watchlist.`);
+  const split = (await ctx.store.getMarketStates(date)).find((m) => m.symbol === symbol)?.splits?.find((s) => s.exDate === exDate);
+  if (!split) throw new ApiError(409, "SPLIT_UNKNOWN", "This split is no longer listed. Nothing was changed.");
+  if (!adjust) {
+    if (stock.splitPlan) {
+      const next = { ...stock };
+      delete next.splitPlan;
+      await ctx.store.putStock(next);
+    }
+    return { choice: "left", split };
+  }
+  if (exDate > date) {
+    if (!sameSplit(stock.splitPlan, split)) await ctx.store.putStock({ ...stock, splitPlan: split });
+    return { choice: "planned", split };
+  }
+  if (exDate < date) throw new ApiError(409, "SPLIT_PASSED", "The split day has passed. Change the levels by hand if needed.");
+  const key = splitDoneKey(symbol, exDate);
+  if ((await ctx.store.getCounters("meta"))[key]) throw new ApiError(409, "SPLIT_DONE", "The levels were already adjusted for this split.");
+  await ctx.store.bumpCounters("meta", { [key]: 1 }); // marker first: never converts twice
+  const r = applySplit(stock, split);
+  const patch: Record<string, unknown> = { symbol, confirm: true };
+  if (r.to.low !== undefined) patch.low = { mode: "dollar", value: r.to.low };
+  if (r.to.high !== undefined) patch.high = { mode: "dollar", value: r.to.high };
+  if (r.to.volume !== undefined) patch.volume = { mode: "absolute", value: r.to.volume };
+  await saveStock(ctx, patch, { mode: "update" });
+  if (stock.splitPlan) {
+    const now = (await ctx.store.listStocks()).find((s) => s.symbol === symbol);
+    if (now?.splitPlan) {
+      const next = { ...now };
+      delete next.splitPlan;
+      await ctx.store.putStock(next);
+    }
+  }
+  await ctx.store.log([{ tMs: ctx.now(), kind: "SETTINGS_CHANGE", symbol, detail: { what: "split_adjust", split, from: r.from, to: r.to } }]);
+  return { choice: "applied", split, to: r.to };
+}
 
 export interface SaveOptions {
   mode: "create" | "update" | "upsert";

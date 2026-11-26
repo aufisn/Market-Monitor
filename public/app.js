@@ -376,7 +376,7 @@ function attentionEl(v) {
   if (!a) return null;
   return h("div", { class: "say " + a.tone, role: a.tone === "red" ? "alert" : "status" },
     h("div", {}, h("b", { text: a.title }), a.sub ? h("span", { text: a.sub }) : null),
-    a.tone === "red" ? ackBtn(v, "Acknowledge") : null);
+    a.tone === "red" ? ackBtn(v, "Acknowledge") : a.review ? h("button", { type: "button", class: "btn", "data-fk": v.sym + ":split", text: "Review", "aria-label": "Review the split for " + v.sym, onclick: () => splitSheet(v) }) : null);
 }
 function moreChips(v) {
   const on = L.moreOn(v.stock);
@@ -829,7 +829,7 @@ function stockSheet(sym) {
     const volU = sel("sfVolU", "Volume unit", [["multiple", "x usual at this time"], ["absolute", "shares"]], ex?.volume?.mode || "multiple");
     const noteIn = h("textarea", { class: "in ta", id: "sfNote", maxlength: "200", rows: "2", value: ex?.notes || "" });
     // "More alerts" (design step 7): folded; one switch and one line each; only Fast move has settings.
-    const more = { range52: !!ex?.range52, fast: !!ex?.fast, averages: !!ex?.averages };
+    const more = { range52: !!ex?.range52, fast: !!ex?.fast, averages: !!ex?.averages, news: !!ex?.news };
     const mkSw = (id, key, label) => {
       const b = h("button", { type: "button", class: "sw", id, role: "switch", "aria-checked": more[key] ? "true" : "false", "aria-label": label, "aria-describedby": id + "H",
         onclick: () => { more[key] = !more[key]; b.setAttribute("aria-checked", more[key] ? "true" : "false"); err.textContent = ""; calc(); } },
@@ -837,7 +837,7 @@ function stockSheet(sym) {
       return b;
     };
     const hint = (id) => h("p", { class: "hint", id: id + "H", "aria-live": "polite" });
-    const h52 = hint("sf52"), hFast = hint("sfFast"), hAvg = hint("sfAvg");
+    const h52 = hint("sf52"), hFast = hint("sfFast"), hAvg = hint("sfAvg"), hNews = hint("sfNews");
     const fastPct = h("input", { class: "in", id: "sfFastPct", type: "text", inputmode: "decimal", autocomplete: "off", value: String(ex?.fast?.pct ?? 3), "aria-label": "Fast move percent" });
     const fastMin = sel("sfFastMin", "Fast move minutes", L.FAST_MINUTES.map((m) => [String(m), String(m)]), String(ex?.fast?.minutes ?? 15));
     const fastCfg = h("div", { class: "mini" }, fastPct, "% in", fastMin, "min");
@@ -847,7 +847,9 @@ function stockSheet(sym) {
       h("summary", {}, h("span", {}, h("span", { text: "More alerts " }), moreSum), h("span", { class: "chev", "aria-hidden": "true", text: "›" })),
       opt("52-week high / low", h52, mkSw("sf52", "range52", "52-week high and low alerts")),
       opt("Fast move", hFast, mkSw("sfFast", "fast", "Fast move alert"), fastCfg),
-      opt("50 / 200-day average", hAvg, mkSw("sfAvg", "averages", "50 and 200-day average alerts")));
+      opt("50 / 200-day average", hAvg, mkSw("sfAvg", "averages", "50 and 200-day average alerts")),
+      opt("News headlines", hNews, mkSw("sfNews", "news", "News headlines")),
+      h("p", { class: "hint auto", text: "Always on, no switch: a warning before a stock split, with an offer to adjust your LOW and HIGH." }));
     const pvLow = h("p", { class: "pv", id: "pvLow", "aria-live": "polite" });
     const pvHigh = h("p", { class: "pv", id: "pvHigh", "aria-live": "polite" });
     const pvVol = h("p", { class: "pv", id: "pvVol", "aria-live": "polite" });
@@ -859,7 +861,7 @@ function stockSheet(sym) {
     const no = h("button", { type: "button", class: "btn", text: "No, go back", onclick: () => { confirmBox.hidden = true; form.hidden = false; lowIn.focus(); } });
     const confirmBox = h("div", { class: "confirm", hidden: true, role: "alertdialog", "aria-labelledby": "cfT" }, h("h3", { id: "cfT", text: "This will alert immediately. Save?" }), cfP, h("div", { class: "dact" }, yes, no));
     let pending = null;
-    const read = () => ({ editing: !!v, existing: ex, symbol: symIn.value, on, low: { mode: lowU.value, text: lowIn.value }, high: { mode: highU.value, text: highIn.value }, vol: { mode: volU.value, text: volIn.value }, range52: more.range52, fast: { on: more.fast, pct: fastPct.value, minutes: fastMin.value }, averages: more.averages, notes: noteIn.value, prev: v?.prev, last: v?.last, cum: v?.cumVolume });
+    const read = () => ({ editing: !!v, existing: ex, symbol: symIn.value, on, low: { mode: lowU.value, text: lowIn.value }, high: { mode: highU.value, text: highIn.value }, vol: { mode: volU.value, text: volIn.value }, range52: more.range52, fast: { on: more.fast, pct: fastPct.value, minutes: fastMin.value }, averages: more.averages, news: more.news, notes: noteIn.value, prev: v?.prev, last: v?.last, cum: v?.cumVolume });
     function calc() {
       const r = L.checkStockForm(read());
       const line = (el, res, none, ok) => { el.textContent = res.state === "ok" ? ok : res.state === "error" ? res.err : none; el.classList.toggle("bad", res.state === "error"); };
@@ -874,7 +876,8 @@ function stockSheet(sym) {
       hAvg.textContent = Number.isFinite(w?.ma50) || Number.isFinite(w?.ma200)
         ? "Crosses " + [Number.isFinite(w?.ma50) ? "$" + L.money(w.ma50) + " (50-day)" : "", Number.isFinite(w?.ma200) ? "$" + L.money(w.ma200) + " (200-day)" : ""].filter(Boolean).join(" or ")
         : "Levels load from the official daily prices";
-      const on = L.moreOn({ range52: more.range52, fast: more.fast ? { pct: fastPct.value, minutes: fastMin.value } : null, averages: more.averages });
+      hNews.textContent = more.news ? "Silent message, at most one every 15 min" : "Headlines for this stock, information only";
+      const on = L.moreOn({ range52: more.range52, fast: more.fast ? { pct: fastPct.value, minutes: fastMin.value } : null, averages: more.averages, news: more.news });
       moreSum.textContent = on.length ? "· " + on.map((t) => t.split(" ")[0]).join(" · ") : "· none on";
       pvNote.textContent = r.vol.state === "ok" && r.vol.mode === "multiple" && L.usualVolumeWaits(!!v, v?.baseline) ? L.USUAL_VOLUME_NOTE : "";
       return r;
@@ -927,6 +930,27 @@ function stockSheet(sym) {
       full ? h("p", { class: "notice warn", text: "The watchlist is full (" + (d?.maxStocks ?? 30) + " stocks). Remove one first." }) : null, form, confirmBox);
     if (full) save.disabled = true;
     calc();
+  });
+}
+/** Split warning: old -> new levels, one tap schedules the change for the split day (never automatic). */
+function splitSheet(v) {
+  const sp = v.split;
+  if (!sp) return;
+  const rows = L.splitRows(v.stock, sp);
+  const planned = L.sameSplit(v.stock.splitPlan, sp);
+  const today = sp.exDate <= (S.data?.date || "");
+  openSheet(v.sym + ":split", (root) => {
+    const err = h("p", { class: "err", role: "alert" });
+    const send = (adjust) => sheetAct(() => api("/api/split", { method: "POST", body: { symbol: v.sym, exDate: sp.exDate, adjust } }),
+      (r) => r.choice === "planned" ? v.sym + ": levels adjust on " + L.dayLabel(sp.exDate) : r.choice === "applied" ? v.sym + ": levels adjusted" : v.sym + ": levels left as they are", err, btns);
+    const yes = h("button", { type: "button", class: "btn pri", text: today ? "Adjust now" : "Adjust on " + L.dayLabel(sp.exDate).replace(/^\w+ /, ""), disabled: planned, onclick: () => send(true) });
+    const no = h("button", { type: "button", class: "btn", text: planned ? "Don't adjust" : "Leave as is", onclick: () => send(false) });
+    const btns = [yes, no];
+    put(root, sheetTitle("Adjust " + v.sym + " for the split"), h("p", { class: "sm", text: L.splitSentence(sp) }),
+      h("table", { class: "tbl" }, h("tbody", {}, rows.map((r) => h("tr", {}, h("td", { text: r.label }), h("td", { class: "num", text: r.from }), h("td", { class: "ar", "aria-label": "becomes", text: "→" }), h("td", { class: "num", text: r.to }))))),
+      h("p", { class: "sm dm", text: planned ? "Scheduled: applied before the open on " + L.dayLabel(sp.exDate) + "." : today ? "Applied at once. % levels need no change." : "Applied before the open on " + L.dayLabel(sp.exDate) + ", only after this tap. % levels need no change." }),
+      err, h("div", { class: "dact" }, yes, no),
+      h("div", { class: "dact" }, h("button", { type: "button", class: "btn", text: "Close", onclick: cancelSheet })));
   });
 }
 function muteSheet(v) {

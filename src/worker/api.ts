@@ -9,7 +9,7 @@ import { avgCumAt } from "../core/rules";
 import { MIN } from "../core/time";
 import { explainWhy } from "./why";
 import { startTestCycle } from "./testcycle";
-import { setPausedAll, applyAck, removeStock, saveStock, setMute } from "./actions";
+import { setPausedAll, applyAck, chooseSplit, removeStock, saveStock, setMute } from "./actions";
 import { authenticate } from "./auth";
 import { APP_VERSION, type Ctx } from "./env";
 import { errorResponse, json, readJson, text } from "./http";
@@ -107,7 +107,8 @@ async function route(request: Request, ctx: Ctx, url: URL): Promise<Response> {
   if (path === "/api/export") {
     allow(m, "GET");
     // FR-2.6: configuration only. Secrets are never stored in the database, so none can leak here.
-    const [settings, stocks] = await Promise.all([ctx.store.getSettings(), ctx.store.listStocks()]);
+    const [settings, all] = await Promise.all([ctx.store.getSettings(), ctx.store.listStocks()]);
+    const stocks = all.map(({ splitPlan: _p, ...s }) => s); // a split choice is not configuration
     return json({ format: "market-monitor-config", version: 1, exportedAt: new Date(now).toISOString(), settings, stocks }, 200, {
       "content-disposition": 'attachment; filename="market-monitor-config.json"',
     });
@@ -147,6 +148,16 @@ async function route(request: Request, ctx: Ctx, url: URL): Promise<Response> {
       return text(lines.join("\n") + "\n", 200, "text/csv; charset=utf-8", { "content-disposition": 'attachment; filename="market-monitor-log.csv"' });
     }
     return json({ log: rows });
+  }
+
+  if (path === "/api/split") {
+    allow(m, "POST");
+    const b = (await readJson(request)) as Record<string, unknown>;
+    if (typeof b !== "object" || b === null || Array.isArray(b)) throw new ApiError(400, "INVALID_INPUT", "body: must be an object");
+    if (typeof b.exDate !== "string") throw new ApiError(400, "INVALID_INPUT", "exDate: must be YYYY-MM-DD");
+    if (typeof b.adjust !== "boolean") throw new ApiError(400, "INVALID_INPUT", "adjust: must be true or false");
+    const r = await chooseSplit(ctx, String(b.symbol ?? ""), b.exDate, b.adjust);
+    return json({ ok: true, choice: r.choice, ...(r.to ? { to: r.to } : {}) });
   }
 
   if (path === "/api/ack-move") {

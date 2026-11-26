@@ -196,8 +196,45 @@ export function attentionLine(vm, nowMs) {
     const more = act.length > 1 ? "and " + (act.length - 1) + " more alert" + (act.length > 2 ? "s" : "") : "";
     return { tone: "red", title: title.trim(), sub: more };
   }
+  const sp = vm.split;
+  if (sp) {
+    const planned = sameSplit(vm.stock?.splitPlan, sp);
+    const lv = splitRows(vm.stock || {}, sp);
+    const sub = planned ? "Your levels adjust before the open that day" : lv.length ? "Your " + lv.map((r) => r.label).join(" and ") + " will be wrong after it" : "Your levels are in % or x usual: no change needed";
+    return { tone: "amber", title: "Split " + splitRatio(sp) + " on " + dayLabel(sp.exDate), sub, review: lv.length > 0 };
+  }
   return null;
 }
+
+/* ------------------------------------------------------------ split warning (design step 7) */
+export const splitRatio = (s) => +Number(s.newRate).toFixed(4) + "-for-" + +Number(s.oldRate).toFixed(4);
+export const sameSplit = (a, b) => !!a && !!b && a.exDate === b.exDate && a.oldRate === b.oldRate && a.newRate === b.newRate;
+const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"], MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+/** "Mon 30 Nov" from YYYY-MM-DD. */
+export function dayLabel(d) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(d || "");
+  if (!m) return String(d || "");
+  const t = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+  return DOW[t.getUTCDay()] + " " + t.getUTCDate() + " " + MON[t.getUTCMonth()];
+}
+/** The next split on or after `today` from the market state, or null. */
+export function upcomingSplit(splits, today) {
+  return (Array.isArray(splits) ? splits : []).filter((s) => s && s.exDate >= today).sort((a, b) => (a.exDate < b.exDate ? -1 : 1))[0] || null;
+}
+const rp = (p) => (p >= 1 ? Math.round(p * 100) / 100 : Math.round(p * 10000) / 10000);
+/** Rows of the Review sheet: the levels a split changes (dollar LOW / HIGH, shares volume), old and new. Same maths as src/core/splits.ts. */
+export function splitRows(stock, s) {
+  const f = s.newRate / s.oldRate, out = [];
+  if (stock.low?.mode === "dollar") out.push({ label: "LOW", from: "$" + money(stock.low.value), to: "$" + money(rp(stock.low.value / f)) });
+  if (stock.high?.mode === "dollar") out.push({ label: "HIGH", from: "$" + money(stock.high.value), to: "$" + money(rp(stock.high.value / f)) });
+  if (stock.volume?.mode === "absolute") out.push({ label: "Volume", from: Math.round(stock.volume.value).toLocaleString("en-US"), to: Math.max(1, Math.round(stock.volume.value * f)).toLocaleString("en-US") });
+  return out;
+}
+/** One plain sentence on what the split does to prices. */
+export const splitSentence = (s) => {
+  const f = s.newRate / s.oldRate;
+  return splitRatio(s) + " on " + dayLabel(s.exDate) + ": " + (f > 1 ? "each share becomes " + +f.toFixed(4) + ", so prices divide by " + +f.toFixed(4) + "." : "every " + +(1 / f).toFixed(4) + " shares become 1, so prices multiply by " + +(1 / f).toFixed(4) + ".");
+};
 
 /** Short labels of the "More alerts" that are on, for the folded form line and the card. */
 export function moreOn(s) {
@@ -205,6 +242,7 @@ export function moreOn(s) {
   if (s.range52) on.push("52W");
   if (s.fast) on.push("Fast " + s.fast.pct + "%/" + s.fast.minutes + "m");
   if (s.averages) on.push("Avg");
+  if (s.news) on.push("News");
   return on;
 }
 export const FAST_MINUTES = [5, 10, 15, 30];
@@ -270,7 +308,7 @@ export function buildVM(stock, market, rules, settings, nowMs, marketOpen, flags
     sym: stock.symbol, stock, status, near, muted, paused, pausedAll: !!flags.pausedAll, notes: stock.notes || "",
     last, lastT, ageS, fresh: fr, prev, open: market?.open, dayHigh: market?.dayHigh, dayLow: market?.dayLow, cumVolume: market?.cumVolume,
     high: hi, low: lo, hiP, loP, vol: stock.volume, range52: !!stock.range52, w52: market?.w52,
-    fast: stock.fast, averages: !!stock.averages, volAvgMultiple: market?.baseline?.multiple, baseline: market?.baseline,
+    fast: stock.fast, averages: !!stock.averages, news: !!stock.news, split: upcomingSplit(market?.splits, market?.date || ""), volAvgMultiple: market?.baseline?.multiple, baseline: market?.baseline,
     changeAbs: Number.isFinite(last) && Number.isFinite(prev) ? last - prev : NaN,
     changePct: Number.isFinite(last) && Number.isFinite(prev) && prev !== 0 ? ((last - prev) / prev) * 100 : NaN,
     nearest, active, acked, atClose,
@@ -467,6 +505,7 @@ export function checkStockForm(f) {
     if (f.range52) body.range52 = true;
     if (fastOn) body.fast = { pct: fastPct, minutes: fastMin };
     if (f.averages) body.averages = true;
+    if (f.news) body.news = true;
     if (notes) body.notes = notes;
     if (!f.on) body.paused = true;
     out.body = body; out.changed = true;
@@ -482,6 +521,7 @@ export function checkStockForm(f) {
   const nf = fastOn ? { pct: fastPct, minutes: fastMin } : null;
   if (JSON.stringify(nf) !== JSON.stringify(ex.fast || null)) body.fast = nf;
   if (!!f.averages !== !!ex.averages) body.averages = !!f.averages;
+  if (!!f.news !== !!ex.news) body.news = !!f.news;
   if (notes !== (ex.notes || "")) body.notes = notes || null;
   if (f.on === !!ex.paused) body.paused = !f.on;
   out.body = body; out.changed = Object.keys(body).length > 0;

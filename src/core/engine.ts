@@ -12,10 +12,12 @@ import { EOD_AFTER_CLOSE_MS, EOD_FINAL_AFTER_CLOSE_MS, EOD_PARTIAL_AFTER_CLOSE_M
 import { gapWindow, scanGap } from "./gapscan";
 import type { GapRule } from "./gapscan";
 import { EVENT_PRIORITY, priceSide } from "./ports";
-import type { Bar, Baseline, EodSummary, MarketData, MarketState, OutboundEvent, RuleKind, RuleState, Settings, Snapshot, StockConfig, Store, TradingDate, YearRange } from "./ports";
+import type { Bar, Baseline, EodSummary, MarketData, MarketState, NewsHeadline, OutboundEvent, RuleKind, RuleState, Settings, Snapshot, StockConfig, Store, TradingDate, YearRange } from "./ports";
 import { evaluatePrice, evaluateVolume, isFlaggedTrade, priceInsideBuffer, resolveThreshold, volumeInsideBuffer } from "./rules";
 import { MIN, nyDate, nyParts } from "./time";
 import { MARKET_SYMBOL, addMinutePrice, averageSide, evaluateFast, marketMove } from "./signals";
+import { NEWS_EVERY_MIN, NEWS_LOOKBACK_MS, foldNews } from "./news";
+import { adjustPrev, applySplit, fixRangeForSplit, sameSplit, scaleBarsForSplits, splitDoneKey, splitLevels, splitWindow, upcomingSplit, validSplit } from "./splits";
 import { W52_PER_RUN_PRE_OPEN, W52_PER_RUN_SESSION, buildYearRange, high52Threshold, low52Threshold, needYearRange, yearWindow } from "./yearrange";
 
 export interface Ports {
@@ -354,6 +356,32 @@ async function tick(
     .sort((a, b) => (a.t0Ms ?? 0) - (b.t0Ms ?? 0));
   if (due.length) await sendDueReminders(store, out, due, new Map([...mem].map(([k, v]) => [k, noted(v)])), backInside, nowMs, settingsFor);
 
+  // --- news headlines (silent, information only): one call for the whole list every second run
+  const newsOn = liveStocks.filter((s) => s.news);
+  if (newsOn.length && market.news) {
+    const first = Math.max(session.open, nowMs - NEWS_LOOKBACK_MS);
+    let list: NewsHeadline[] | undefined;
+    if (Math.floor(nowMs / MIN) % NEWS_EVERY_MIN === 0 && canSpend()) {
+      const since = Math.min(...newsOn.map((s) => mem.get(s.symbol)?.news?.seenMs ?? first));
+      try {
+        list = await market.news(newsOn.map((s) => s.symbol), since, 50);
+      } catch {
+        list = undefined; // headlines are information only: simply try again on a later run
+      }
+    }
+    for (const s of newsOn) {
+      const cur = mem.get(s.symbol)!;
+      const r = foldNews(cur.news, s.symbol, list, nowMs, first);
+      if (!r.changed) continue;
+      const next = { ...cur, news: r.state };
+      mem.set(s.symbol, next);
+      const i = toWrite.findIndex((x) => x.symbol === s.symbol);
+      if (i >= 0) toWrite[i] = next;
+      else toWrite.push(next);
+      if (r.send) await emit(store, out, { type: "NEWS", symbol: s.symbol, items: r.send.items, more: r.send.more }, nowMs);
+    }
+  }
+
   // --- opening briefing (FR-7)
   await maybeBriefing(store, m, session, date, nowMs, active, mem);
 
@@ -436,7 +464,8 @@ async function buildEod(
     if (market.officialDailyBars) {
       const w = eodWindow(date, session.close, nowMs, set.baselineSessions);
       try {
-        official = await market.officialDailyBars(active.map((s) => s.symbol), w.startMs, w.endMs);
+        // Split-adjusted: on a split day the earlier sessions (previous close, average volume) are in today's units.
+        official = await market.officialDailyBars(active.map((s) => s.symbol), w.startMs, w.endMs, { splitAdjusted: true });
       } catch (e) {
         official = undefined; // retried on the next run until the final time
         // One notice and one log line per trading date (not per run).
@@ -506,14 +535,90 @@ export async function runPreOpen(ports: Ports, nowMs: number, opts: TickOptions 
       if (i >= 0) fresh[i] = next;
       else fresh.push(next);
     }
+    const put = (next: MarketState) => {
+      ms.set(next.symbol, next);
+      const i = fresh.findIndex((x) => x.symbol === next.symbol);
+      if (i >= 0) fresh[i] = next;
+      else fresh.push(next);
+    };
+
+    // Splits: once a day, ONE call for the whole list (free plan: corporate actions)
+    const counters = await store.getCounters(date);
+    let splitsKnown = !!counters.splits;
+    if (!splitsKnown && market.splits && active.length && m.calls < CALL_BUDGET - TAIL - 8) {
+      try {
+        const w = splitWindow(date);
+        const got = await market.splits(active.map((s) => s.symbol), w.start, w.end);
+        for (const s of active) {
+          const list = (got[s.symbol] ?? []).filter(validSplit).sort((a, b) => (a.exDate < b.exDate ? -1 : 1));
+          const cur = ms.get(s.symbol);
+          if (!list.length && !cur?.splits) continue;
+          const next: MarketState = { ...(cur ?? { symbol: s.symbol, date }) };
+          if (list.length) next.splits = list;
+          else delete next.splits;
+          put(next);
+        }
+        await store.bumpCounters(date, { splits: 1 });
+        splitsKnown = true;
+      } catch {
+        /* retried on the next run */
+      }
+    }
+    // Split day: Previous Close (raw) and, if the provider has not adjusted it yet, the 52-week range
+    for (const s of active) {
+      const cur = ms.get(s.symbol);
+      if (!cur?.splits) continue;
+      const prev = adjustPrev(cur.prev, cur.splits, date);
+      const w52 = cur.w52?.date === date ? fixRangeForSplit(cur.w52, prev, cur.splits, date) : cur.w52;
+      if (prev !== cur.prev || w52 !== cur.w52) put({ ...cur, ...(prev ? { prev } : {}), ...(w52 ? { w52 } : {}) });
+    }
     if (fresh.length) await store.putMarketStates(fresh);
+
+    if (splitsKnown) {
+      // One warning per announced split (never repeated); none when the user already chose to adjust.
+      const due = active
+        .map((s) => ({ s, up: upcomingSplit(ms.get(s.symbol)?.splits, date) }))
+        .filter((x): x is { s: StockConfig; up: NonNullable<typeof x.up> } => !!x.up && !sameSplit(x.s.splitPlan, x.up));
+      if (due.length) {
+        const seen = await store.getCounters("meta");
+        const fresh2 = due.filter((x) => !seen[`split:${x.s.symbol}:${x.up.exDate}`] && !seen[splitDoneKey(x.s.symbol, x.up.exDate)]).slice(0, 5);
+        if (fresh2.length) {
+          // Markers first: a lost warning is better than two.
+          await store.bumpCounters("meta", Object.fromEntries(fresh2.map((x) => [`split:${x.s.symbol}:${x.up.exDate}`, 1])));
+          const out = newOut();
+          await emitMany(store, out, fresh2.map((x) => ({ type: "SPLIT", symbol: x.s.symbol, split: x.up, levels: splitLevels(x.s) })), nowMs);
+          m.events += out.events;
+        }
+      }
+      // The split day of an "Adjust on <day>" choice: convert the levels before the open.
+      for (const s of active) {
+        const plan = s.splitPlan;
+        if (!plan || plan.exDate > date || m.calls >= CALL_BUDGET - TAIL - 4) continue;
+        const still = (ms.get(s.symbol)?.splits ?? []).some((x) => sameSplit(x, plan));
+        if (still) {
+          const r = applySplit(s, plan);
+          await store.bumpCounters("meta", { [splitDoneKey(s.symbol, plan.exDate)]: 1 }); // a late "Adjust now" tap never converts twice
+          await store.putStock(r.stock);
+          await store.log([{ tMs: nowMs, kind: "SETTINGS_CHANGE", symbol: s.symbol, detail: { what: "split_adjust", split: plan, from: r.from, to: r.to } }]);
+          await store.enqueue({ type: "SPLIT_APPLIED", symbol: s.symbol, split: plan, from: r.from, to: r.to }, EVENT_PRIORITY.SPLIT_APPLIED, nowMs);
+          m.events++;
+        } else {
+          // The provider no longer lists it (cancelled or changed): nothing is converted.
+          const next = { ...s };
+          delete next.splitPlan;
+          await store.putStock(next);
+          await store.log([{ tMs: nowMs, kind: "SETTINGS_CHANGE", symbol: s.symbol, detail: { what: "split_plan_dropped", split: plan } }]);
+        }
+      }
+    }
 
     // One baseline per run (FR-6.2)
     const pick = pickNextBaseline(active, [...baselines.values()], date);
     if (pick) {
       try {
         const w = baselineWindow(date, set.baselineSessions);
-        const bars = await market.bars(pick, "5Min", w.startMs, w.endMs);
+        // Intraday bars are unadjusted: volume before a recent split is converted to today's share count.
+        const bars = scaleBarsForSplits(await market.bars(pick, "5Min", w.startMs, w.endMs), ms.get(pick)?.splits, date);
         const b = buildBaseline(pick, date, bars, set.baselineSessions, 5);
         await store.putBaseline(b);
         baselines.set(pick, b);

@@ -7,7 +7,8 @@
  *
  * Everything not confirmed against live responses is tagged [UNVERIFIED-PHASE0].
  */
-import type { Bar, DailyRef, MarketData, Snapshot, Symbol, TradingDate } from "../core/ports";
+import type { Bar, DailyRef, MarketData, NewsHeadline, Snapshot, SplitInfo, Symbol, TradingDate } from "../core/ports";
+import { cleanLinkUrl } from "./glance-fmt";
 import { CallCounter, nyDate, parseTime, realSleep, type Sleep } from "./util";
 
 export type AlpacaErrorKind = "AUTH" | "RATE_LIMIT" | "SERVER" | "TIMEOUT" | "NETWORK" | "BAD_REQUEST" | "PARSE" | "TOO_MANY_PAGES";
@@ -160,6 +161,55 @@ export class AlpacaMarketData implements MarketData {
     return this.barsMulti(symbols, "1Day", startMs, endMs, "sip", opts.splitAdjusted ? "split" : "raw");
   }
 
+  /**
+   * Forward and reverse splits (corporate actions, free plan: confirmed by the 2026-11-25 access check).
+   * One request; at most 1000 actions, which covers a 30-stock list for months. Only the four fields used are copied.
+   */
+  async splits(symbols: Symbol[], start: TradingDate, end: TradingDate): Promise<Record<Symbol, SplitInfo[]>> {
+    const out: Record<Symbol, SplitInfo[]> = {};
+    if (!symbols.length) return out;
+    const raw = await this.get<{ corporate_actions?: { forward_splits?: unknown; reverse_splits?: unknown } | null }>("/v1/corporate-actions", {
+      symbols: symbols.join(","), types: "forward_split,reverse_split", start, end, limit: "1000", sort: "asc",
+    });
+    const want = new Set(symbols);
+    const ca = raw.corporate_actions ?? {};
+    for (const list of [ca.forward_splits, ca.reverse_splits]) {
+      if (!Array.isArray(list)) continue;
+      for (const x of list as Record<string, unknown>[]) {
+        const sym = typeof x?.symbol === "string" ? x.symbol : "";
+        const exDate = typeof x?.ex_date === "string" ? x.ex_date.slice(0, 10) : "";
+        const oldRate = Number(x?.old_rate);
+        const newRate = Number(x?.new_rate);
+        if (!want.has(sym) || !/^\d{4}-\d{2}-\d{2}$/.test(exDate) || !(oldRate > 0) || !(newRate > 0) || oldRate === newRate) continue;
+        (out[sym] ??= []).push({ exDate, oldRate, newRate });
+      }
+    }
+    return out;
+  }
+
+  /**
+   * News headlines (free plan: confirmed by the access check) created after sinceMs, newest first, one request
+   * (Alpaca allows at most 50). Content is not requested; headline and source are plain text, url is https only.
+   */
+  async news(symbols: Symbol[], sinceMs: number, limit: number): Promise<NewsHeadline[]> {
+    if (!symbols.length) return [];
+    const raw = await this.get<{ news?: unknown }>("/v1beta1/news", {
+      symbols: symbols.join(","), start: new Date(sinceMs).toISOString(), limit: String(Math.min(50, Math.max(1, limit))), sort: "desc", include_content: "false",
+    });
+    const out: NewsHeadline[] = [];
+    if (!Array.isArray(raw.news)) return out;
+    for (const x of raw.news as Record<string, unknown>[]) {
+      const id = Number(x?.id);
+      const tMs = parseTime(typeof x?.created_at === "string" ? x.created_at : undefined);
+      const headline = typeof x?.headline === "string" ? plain(x.headline, 300) : "";
+      if (!Number.isFinite(id) || !Number.isFinite(tMs) || !headline) continue;
+      const syms = Array.isArray(x?.symbols) ? (x.symbols as unknown[]).filter((s): s is string => typeof s === "string").slice(0, 50) : [];
+      const url = cleanLinkUrl(x?.url);
+      out.push({ id, tMs, headline, source: typeof x?.source === "string" ? plain(x.source, 30) : "", symbols: syms, ...(url ? { url } : {}) });
+    }
+    return out;
+  }
+
   // ---------------------------------------------------------------- bars with pagination
   private async barsMulti(
     symbols: Symbol[], tf: string, startMs: number, endMs: number, feed: "iex" | "sip" = this.feed, adjustment: "raw" | "split" = "raw",
@@ -247,6 +297,9 @@ export class AlpacaMarketData implements MarketData {
     throw lastErr ?? new AlpacaError("NETWORK", "market data request failed");
   }
 }
+
+/** Plain text from a provider string: control characters removed, whitespace folded, cut to `max`. */
+const plain = (s: string, max: number): string => s.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, max);
 
 function mapBar(b: RawBar | undefined | null): Bar | undefined {
   if (!b || typeof b.o !== "number" || typeof b.h !== "number" || typeof b.l !== "number" || typeof b.c !== "number") return undefined;

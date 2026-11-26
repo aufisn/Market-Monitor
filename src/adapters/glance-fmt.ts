@@ -126,6 +126,14 @@ export function shortDate(date: string): string {
   return `${DOW[d.getUTCDay()]} ${d.getUTCDate()} ${MON[d.getUTCMonth()]}`;
 }
 
+/** A news link: plain https, no spaces, quotes or angle brackets, no user part; else undefined (headline shown without a link). */
+export function cleanLinkUrl(v: unknown): string | undefined {
+  if (typeof v !== "string") return undefined;
+  const s = v.trim();
+  if (!s || s.length > 500 || /[\s"'<>\\`]/.test(s) || !/^https:\/\/[^/?#@]+([/?#].*)?$/i.test(s)) return undefined;
+  return s;
+}
+
 /** A dashboard link is used only when it is a plain https URL (never carries a secret). */
 export function cleanDashboardUrl(v: unknown): string | undefined {
   if (typeof v !== "string") return undefined;

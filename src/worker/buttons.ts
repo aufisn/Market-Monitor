@@ -3,7 +3,7 @@ import type { CallbackAction } from "../adapters/callbacks";
 import { f2, vol } from "../adapters/glance-fmt";
 import { renderSetCancelled, renderSetSaved } from "../adapters/render-commands";
 import {
-  alertKeyboard, chooserKeyboard, renderBriefingDetails, renderDetails, renderMovePrompt, renderSeen, volumeFacts,
+  alertKeyboard, chooserKeyboard, renderBriefingDetails, renderDetails, renderMovePrompt, renderSeen, renderSplitChoice, volumeFacts,
 } from "../adapters/render-glance";
 import type { Rendered } from "../adapters/telegram";
 import { nyDate } from "../adapters/util";
@@ -12,7 +12,7 @@ import type { RuleKind, ThresholdInput } from "../core/ports";
 import { resolveThreshold } from "../core/rules";
 import { MIN } from "../core/time";
 import { ackAndMove, STALE_TEXT } from "./ackmove";
-import { applyAck, saveStock, setMute } from "./actions";
+import { applyAck, chooseSplit, saveStock, setMute } from "./actions";
 import { pendingKey, volumeRuleText } from "./commands";
 import type { Ctx } from "./env";
 import { ApiError } from "./validate";
@@ -109,6 +109,16 @@ export async function handleButton(ctx: Ctx, action: CallbackAction, msgId: numb
       const r = await ackAndMove(ctx, action.symbol, action.rule, { pct: action.pct }, { cycle: action.cycle, messageId: msgId });
       if (!r.ok && r.kind === "STALE") await stripKeyboard(ctx, msgId);
       return r.ok ? `${action.rule} moved to ${f2(r.to)}` : r.reason.slice(0, 190);
+    }
+    case "split": {
+      try {
+        const r = await chooseSplit(ctx, action.symbol, action.exDate, action.adjust);
+        if (msgId) await ctx.telegram.editMessageText(msgId, renderSplitChoice(action.symbol, r.split, r.choice, r.to)).catch(() => undefined);
+        return r.choice === "planned" ? "Levels adjust on the split day" : r.choice === "applied" ? "Levels adjusted" : "Left as is";
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 409) await stripKeyboard(ctx, msgId);
+        return e instanceof ApiError ? e.message.slice(0, 190) : "Error";
+      }
     }
     case "saveset":
     case "cancelset": {
