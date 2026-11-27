@@ -4,7 +4,7 @@ compatibility_date = "2026-11-01"
 
 # One schedule (UTC). The code decides from New York time and the calendar what to do (FR-1.5).
 [triggers]
-crons = ["* 11-21 * * 1-5"]
+crons = ["* 11-21 * * MON-FRI"] # day names: Cloudflare numbers weekdays from Sunday = 1, so "1-5" meant Sunday-Thursday
 
 [[d1_databases]]
 binding = "DB"

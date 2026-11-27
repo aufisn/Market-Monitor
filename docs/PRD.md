@@ -196,7 +196,7 @@ I-10 A crossing detected from a one-minute bar's high or low (not from the
 4. SYSTEM OVERVIEW
 ==============================================================================
 4.1 Components (one Worker deployment, one database)
-  C1 Scheduler        - one schedule "* 11-21 * * 1-5" (UTC), covering the
+  C1 Scheduler        - one schedule "* 11-21 * * MON-FRI" (UTC), covering the
                         pre-open work and the session in both US clock
                         settings; the code decides what to do from the New York
                         time and the exchange calendar.
