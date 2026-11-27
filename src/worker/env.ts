@@ -28,6 +28,8 @@ export interface Env {
   TELEGRAM_WEBHOOK_SECRET?: string;
   DASHBOARD_ACCESS_CODE?: string;
   FINNHUB_API_KEY?: string;
+  /** Optional: Healthchecks.io ping address for the outside watchdog (src/worker/watchdog.ts). */
+  HEALTHCHECK_URL?: string;
   /** Non-secret public https address of the dashboard (wrangler.toml [vars]); empty hides the button. */
   DASHBOARD_URL?: string;
 }

@@ -26,4 +26,5 @@ DASHBOARD_URL = "https://market-monitor.mm-alerts.workers.dev"
 
 # Secrets (set with `wrangler secret put`, never here):
 #   ALPACA_KEY_ID, ALPACA_SECRET_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
-#   TELEGRAM_WEBHOOK_SECRET, DASHBOARD_ACCESS_CODE, (optional) FINNHUB_API_KEY
+#   TELEGRAM_WEBHOOK_SECRET, DASHBOARD_ACCESS_CODE, (optional) FINNHUB_API_KEY,
+#   (optional) HEALTHCHECK_URL: the Healthchecks.io ping address for the outside watchdog

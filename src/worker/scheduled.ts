@@ -13,6 +13,7 @@ import { drainOutbound } from "./outbox";
 import { driveTestCycle } from "./testcycle";
 import { maybeAccessCheck } from "./accesscheck";
 import { renderGlance } from "../adapters/render-glance";
+import { pingWatchdog } from "./watchdog";
 
 export const WORK_START_UTC_HOUR = 11; // 07:00 ET (EDT) / 06:00 ET (EST), the earliest pre-open work
 export const WORK_END_UTC_HOUR = 22; // exclusive: covers SESSION ENDED after a 16:00 ET close in both clock settings
@@ -82,6 +83,7 @@ export async function runScheduledJob(env: Env, deps: ScheduledDeps = {}): Promi
   }
 
   let polls = 0;
+  let failed = false;
   let lastCost = 3;
   let lastD1Cost = 8;
   for (let i = 0; i < maxPolls; i++) {
@@ -94,6 +96,7 @@ export async function runScheduledJob(env: Env, deps: ScheduledDeps = {}): Promi
       status = (await engine.runScheduled(ports, start)).status;
       polls++;
     } catch (e) {
+      failed = true;
       console.error("tick failed", (e as { name?: string })?.name ?? "unknown"); // name only, never message text
       await ctx.store.log([{ tMs: start, kind: "ERROR", detail: { what: "tick_failed", name: (e as { name?: string })?.name ?? "unknown" } }]).catch(() => undefined);
     }
@@ -117,6 +120,8 @@ export async function runScheduledJob(env: Env, deps: ScheduledDeps = {}): Promi
     const wait = next - now();
     if (wait > 0) await sleep(wait);
   }
+  // Outside watchdog: every fifth minute, one call if the budget allows (silence = Healthchecks alerts).
+  await pingWatchdog(ctx, deps.fetch ?? fetch, t0, !failed);
   return { ran: true, polls, calls: ctx.counter.used + ctx.d1counter.used };
 }
 
